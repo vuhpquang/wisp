@@ -99,9 +99,13 @@ final class TabSidebarModel: ObservableObject {
         let isSelected: Bool
         let keyEquivalent: String
         let hasBell: Bool
+        let isPinned: Bool
     }
 
     @Published private(set) var tabs: [Tab] = []
+
+    var pinnedTabs: [Tab] { tabs.filter(\.isPinned) }
+    var unpinnedTabs: [Tab] { tabs.filter { !$0.isPinned } }
 
     private weak var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
@@ -155,7 +159,8 @@ final class TabSidebarModel: ObservableObject {
                 color: terminal?.tabColor ?? .none,
                 isSelected: w === selected,
                 keyEquivalent: terminal?.keyEquivalent ?? "",
-                hasBell: (w.windowController as? BaseTerminalController)?.bell ?? false)
+                hasBell: (w.windowController as? BaseTerminalController)?.bell ?? false,
+                isPinned: terminal?.isTabPinned ?? false)
         }
 
         if newTabs != tabs { tabs = newTabs }
@@ -200,23 +205,44 @@ final class TabSidebarModel: ObservableObject {
         (window(for: id) as? TerminalWindow)?.tabColor = color
     }
 
-    /// Move the tab `id` to the position currently held by `targetID`.
+    /// Pinned tabs are shown as tiles at the top of the sidebar and are kept
+    /// in front of all other tabs so they keep the lowest goto_tab numbers.
+    func togglePin(_ id: Tab.ID) {
+        guard let source = window(for: id) as? TerminalWindow else { return }
+        source.isTabPinned.toggle()
+
+        // Pinning moves the tab to the end of the pinned tabs, unpinning to
+        // the start of the unpinned tabs. Both are the same boundary.
+        let others = tabWindows.filter { $0 !== source }
+        if let lastPinned = others.last(where: { ($0 as? TerminalWindow)?.isTabPinned == true }) {
+            reorder(source, relativeTo: lastPinned, ordered: .above)
+        } else if let first = others.first {
+            reorder(source, relativeTo: first, ordered: .below)
+        }
+    }
+
+    /// Move the tab `id` to the position currently held by `targetID`. Tabs only
+    /// move within their own section (pinned or not).
     func move(_ id: Tab.ID, to targetID: Tab.ID) {
         guard id != targetID,
               let source = window(for: id),
               let target = window(for: targetID),
-              let tabGroup = source.tabGroup else { return }
-
-        let windows = tabGroup.windows
-        guard let sourceIndex = windows.firstIndex(of: source),
+              (source as? TerminalWindow)?.isTabPinned == (target as? TerminalWindow)?.isTabPinned,
+              let windows = source.tabGroup?.windows,
+              let sourceIndex = windows.firstIndex(of: source),
               let targetIndex = windows.firstIndex(of: target) else { return }
 
+        reorder(source, relativeTo: target, ordered: sourceIndex < targetIndex ? .above : .below)
+    }
+
+    private func reorder(_ source: NSWindow, relativeTo target: NSWindow, ordered: NSWindow.OrderingMode) {
+        guard source !== target, let tabGroup = source.tabGroup else { return }
         let selected = tabGroup.selectedWindow
 
         NSAnimationContext.beginGrouping()
         NSAnimationContext.current.duration = 0
         tabGroup.removeWindow(source)
-        target.addTabbedWindowSafely(source, ordered: sourceIndex < targetIndex ? .above : .below)
+        target.addTabbedWindowSafely(source, ordered: ordered)
         selected?.makeKey()
         NSAnimationContext.endGrouping()
 
@@ -276,6 +302,7 @@ struct TabSidebarContainer<Content: View>: View {
             TabSidebarView(model: model)
                 .frame(width: sidebarWidth)
                 .background(Color.black.opacity(0.12))
+                .background(backgroundColor.opacity(0.88))
 
             Divider()
         }
@@ -285,12 +312,7 @@ struct TabSidebarContainer<Content: View>: View {
     private var floatingSidebar: some View {
         TabSidebarView(model: model)
             .frame(width: sidebarWidth)
-            .background(backgroundColor.opacity(0.92))
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.12)))
+            .modifier(FloatingSidebarBackground(tint: backgroundColor))
             .overlay(alignment: .trailing) { resizeHandle }
             .shadow(color: .black.opacity(0.35), radius: 14, x: 2, y: 0)
     }
@@ -326,17 +348,21 @@ struct TabSidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 2) {
-                    ForEach(model.tabs) { tab in
-                        TabSidebarRow(tab: tab, model: model)
-                            .onDrag {
-                                draggingID = tab.id
-                                return NSItemProvider(object: "\(tab.id.hashValue)" as NSString)
+                VStack(spacing: 8) {
+                    if !model.pinnedTabs.isEmpty {
+                        LazyVGrid(columns: Self.pinnedColumns, spacing: 6) {
+                            ForEach(model.pinnedTabs) { tab in
+                                reorderable(TabSidebarTile(tab: tab, model: model), id: tab.id)
                             }
-                            .onDrop(of: [.text], delegate: TabSidebarDropDelegate(
-                                target: tab.id,
-                                model: model,
-                                draggingID: $draggingID))
+                        }
+
+                        Divider().opacity(0.5)
+                    }
+
+                    LazyVStack(spacing: 2) {
+                        ForEach(model.unpinnedTabs) { tab in
+                            reorderable(TabSidebarRow(tab: tab, model: model), id: tab.id)
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -361,6 +387,124 @@ struct TabSidebarView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
+    }
+
+    private static let pinnedColumns = Array(
+        repeating: GridItem(.flexible(), spacing: 6),
+        count: 3)
+
+    private func reorderable<V: View>(_ view: V, id: TabSidebarModel.Tab.ID) -> some View {
+        view
+            .onDrag {
+                draggingID = id
+                return NSItemProvider(object: "\(id.hashValue)" as NSString)
+            }
+            .onDrop(of: [.text], delegate: TabSidebarDropDelegate(
+                target: id,
+                model: model,
+                draggingID: $draggingID))
+    }
+}
+
+/// A pinned tab, shown as a tile in a grid at the top of the sidebar.
+private struct TabSidebarTile: View {
+    let tab: TabSidebarModel.Tab
+    @ObservedObject var model: TabSidebarModel
+    @State private var isHovering = false
+
+    var body: some View {
+        VStack(spacing: 3) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(maxWidth: .infinity)
+
+                if tab.hasBell && !tab.isSelected {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
+                }
+            }
+
+            Text(tab.title)
+                .font(.system(size: 10))
+                .lineLimit(1)
+                .truncationMode(.head)
+        }
+        .foregroundStyle(tab.isSelected ? .primary : .secondary)
+        .padding(.horizontal, 6)
+        .frame(height: 46)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(background))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(tab.isSelected ? Color.primary.opacity(0.3) : Color.primary.opacity(0.08)))
+        .contentShape(Rectangle())
+        .help(tab.title)
+        .onHover { isHovering = $0 }
+        .onTapGesture { model.select(tab.id) }
+        .contextMenu { TabSidebarContextMenu(tab: tab, model: model) }
+    }
+
+    private var background: Color {
+        if let color = tab.color.displayColor {
+            return Color(nsColor: color).opacity(tab.isSelected ? 0.55 : 0.3)
+        }
+
+        if tab.isSelected { return Color.primary.opacity(0.16) }
+        return Color.primary.opacity(isHovering ? 0.1 : 0.06)
+    }
+}
+
+/// The context menu shared by sidebar rows and pinned tiles.
+private struct TabSidebarContextMenu: View {
+    let tab: TabSidebarModel.Tab
+    let model: TabSidebarModel
+
+    var body: some View {
+        Button(tab.isPinned ? "Unpin Tab" : "Pin Tab") { model.togglePin(tab.id) }
+        Button("Rename Tab…") { model.rename(tab.id) }
+        Menu("Tab Color") {
+            ForEach(TerminalTabColor.allCases, id: \.self) { color in
+                Button(color.localizedName) { model.setColor(color, for: tab.id) }
+            }
+        }
+        Divider()
+        Button("Close Tab") { model.close(tab.id) }
+        Button("Close Other Tabs") { model.closeOthers(tab.id) }
+    }
+}
+
+/// Liquid glass on macOS 26 and later, a tinted material before that.
+private struct FloatingSidebarBackground: ViewModifier {
+    let tint: Color
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+    }
+
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            content
+                .background(tint.opacity(0.45), in: shape)
+                .glassEffect(.regular, in: shape)
+        } else {
+            fallback(content)
+        }
+        #else
+        fallback(content)
+        #endif
+    }
+
+    private func fallback(_ content: Content) -> some View {
+        content
+            .background(tint.opacity(0.92))
+            .background(.ultraThinMaterial)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.12)))
     }
 }
 
@@ -415,17 +559,7 @@ private struct TabSidebarRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { model.select(tab.id) }
-        .contextMenu {
-            Button("Rename Tab…") { model.rename(tab.id) }
-            Menu("Tab Color") {
-                ForEach(TerminalTabColor.allCases, id: \.self) { color in
-                    Button(color.localizedName) { model.setColor(color, for: tab.id) }
-                }
-            }
-            Divider()
-            Button("Close Tab") { model.close(tab.id) }
-            Button("Close Other Tabs") { model.closeOthers(tab.id) }
-        }
+        .contextMenu { TabSidebarContextMenu(tab: tab, model: model) }
     }
 
     /// Colored tabs are filled with their color, stronger when selected.

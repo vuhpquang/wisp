@@ -71,6 +71,15 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// Whether this tab is pinned to the top of the vertical tab sidebar.
+    var isTabPinned: Bool = false {
+        didSet {
+            guard isTabPinned != oldValue else { return }
+            invalidateRestorableState()
+            NotificationCenter.default.post(name: TabSidebarState.tabsDidChange, object: self)
+        }
+    }
+
     /// Whether this window shows its tabs in the vertical sidebar instead of the
     /// native tab bar. Titlebar tabs keep the native tabs since they live in
     /// the titlebar itself.
