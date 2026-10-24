@@ -232,6 +232,7 @@ class AppDelegate: NSObject,
         // Wisp is built from source, so Sparkle must never run: it would replace
         // the app with upstream Ghostty. Wisp updates from its checkout instead.
         WispUpdater.shared.start()
+        installAgentMonitorMenuItem()
 
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
@@ -1003,6 +1004,24 @@ class AppDelegate: NSObject,
 
     @IBAction func reloadConfig(_ sender: Any?) {
         ghostty.reloadConfig()
+    }
+
+    /// Window > Agent Monitor (⇧⌘A).
+    private func installAgentMonitorMenuItem() {
+        guard let menu = NSApp.mainMenu?.item(withTitle: "Window")?.submenu else { return }
+        let item = NSMenuItem(
+            title: "Agent Monitor",
+            action: #selector(toggleAgentMonitor(_:)),
+            keyEquivalent: "a")
+        item.keyEquivalentModifierMask = [.command, .shift]
+        item.target = self
+        item.setImageIfDesired(systemSymbolName: "sparkles")
+        menu.insertItem(NSMenuItem.separator(), at: 0)
+        menu.insertItem(item, at: 0)
+    }
+
+    @IBAction func toggleAgentMonitor(_ sender: Any?) {
+        AgentMonitorWindowController.shared.toggle()
     }
 
     @IBAction func checkForUpdates(_ sender: Any?) {

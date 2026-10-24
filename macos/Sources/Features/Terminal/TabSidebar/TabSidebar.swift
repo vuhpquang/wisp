@@ -1011,6 +1011,10 @@ private struct TabWorkspaceBar: View {
 
                 Button("Save Workspace as Layout", action: model.saveWorkspaceAsLayout)
                 Button("Edit Layouts File…") { TabLayoutStore.openFile() }
+
+                Divider()
+
+                Button("Agent Monitor") { AgentMonitorWindowController.shared.toggle() }
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .medium))
