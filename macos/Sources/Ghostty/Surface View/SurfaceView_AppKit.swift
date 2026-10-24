@@ -1602,6 +1602,7 @@ extension Ghostty {
             // If we have a selection, add copy
             if let text = self.accessibilitySelectedText(), text.count > 0 {
                 menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+                menu.addItem(OutputSharer.shared.menuItem(for: text, title: title.isEmpty ? "Terminal" : title))
             }
             menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
 
