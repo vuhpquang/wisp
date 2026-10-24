@@ -1,6 +1,6 @@
 name: Sync upstream
 
-# Keeps this fork up to date with ghostty-org/ghostty. Scheduled workflows only
+# Keeps Wisp up to date with the upstream terminal (ghostty-org/ghostty). Scheduled workflows only
 # run from the default branch, so `main` is upstream plus this workflow:
 # upstream is merged into `main`, then `main` into the feature branch. If a
 # merge conflicts the run fails (GitHub emails you) and that branch isn't
@@ -46,10 +46,28 @@ jobs:
       - name: Merge upstream into main
         run: |
           if ! git merge --no-edit upstream/main; then
-            echo "::error::Merging upstream/main into main conflicts in:"
-            git diff --name-only --diff-filter=U | sed 's/^/::error::  /'
-            exit 1
+            # Files Wisp removed (upstream's docs and CI) stay removed even
+            # when upstream changed them.
+            git status --porcelain | awk '$1 == "DU" { print $2 }' | xargs -r git rm -q --
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "::error::Merging upstream/main into main conflicts in:"
+              git diff --name-only --diff-filter=U | sed 's/^/::error::  /'
+              exit 1
+            fi
+            git commit --no-edit
           fi
+
+          # Upstream's own workflows and repo files don't belong in Wisp.
+          stray="$(git ls-files .github | grep -v '^.github/workflows/sync-upstream.yml$' || true)"
+          for f in AI_POLICY.md CONTRIBUTING.md HACKING.md PACKAGING.md CODEOWNERS .mailmap; do
+            git ls-files --error-unmatch "$f" >/dev/null 2>&1 && stray="$stray"$'\n'"$f"
+          done
+          stray="$(echo "$stray" | sed '/^$/d')"
+          if [ -n "$stray" ]; then
+            echo "$stray" | xargs git rm -rq --
+            git commit -m "Remove upstream repo files" -m "Wisp keeps its own docs and CI."
+          fi
+
           git push origin main
 
       - name: Merge main into the feature branch
