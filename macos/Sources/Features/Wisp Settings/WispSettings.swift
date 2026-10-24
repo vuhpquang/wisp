@@ -223,12 +223,40 @@ struct WispSettingsView: View {
             SettingToggle(
                 key: "macos-vertical-tabs", title: "Vertical tab sidebar", defaultValue: true,
                 note: "Also in the tab menu. ⌘E pins or collapses the sidebar.")
+            UnloadTabsPicker()
             SettingPicker(key: "notify-on-command-finish", title: "Notify when a command finishes", options: ["never", "unfocused", "always"])
             SettingPicker(
                 key: "notify-on-command-finish-action", title: "Notify by",
                 options: ["bell", "notify", "bell,notify"])
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Manual or automatic unloading of idle tabs. This is a Wisp preference, not
+/// a Ghostty option, so it lives in user defaults.
+private struct UnloadTabsPicker: View {
+    @ObservedObject private var store = TabSleepStore.shared
+
+    var body: some View {
+        Picker(selection: $store.autoUnloadMinutes) {
+            ForEach(TabSleepStore.autoUnloadChoices, id: \.self) { minutes in
+                Text(Self.label(minutes)).tag(minutes)
+            }
+        } label: {
+            SettingLabel(
+                title: "Unload idle tabs",
+                note: "Unloaded tabs close their shell and reopen in the same folders when clicked. Tabs running a program are never unloaded.")
+        }
+    }
+
+    private static func label(_ minutes: Int) -> String {
+        switch minutes {
+        case 0: "Manually (tab menu)"
+        case ..<60: "After \(minutes) minutes"
+        case 60: "After 1 hour"
+        default: "After \(minutes / 60) hours"
+        }
     }
 }
 

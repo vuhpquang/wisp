@@ -243,6 +243,7 @@ final class TabSidebarModel: ObservableObject {
             .store(in: &cancellables)
 
         TabSidebarState.shared.installMouseMonitorIfNeeded()
+        TabSleepStore.shared.startAutoUnload()
         reload()
     }
 
@@ -395,6 +396,32 @@ final class TabSidebarModel: ObservableObject {
         (window(for: id) as? TerminalWindow)?.tabColor = color
     }
 
+    // MARK: Sleeping tabs
+
+    /// Unloaded tabs of the active workspace.
+    var sleepingTabs: [SleepingTab] {
+        let active = TabWorkspaceStore.shared.activeID
+        return TabSleepStore.shared.tabs.filter { $0.workspaceID == active }
+    }
+
+    func unload(_ id: Tab.ID) {
+        guard let target = window(for: id) else { return }
+        do {
+            try TabSleepStore.shared.unload(target)
+        } catch {
+            guard let window else { return }
+            let alert = NSAlert()
+            alert.messageText = "Can't Unload Tab"
+            alert.informativeText = error.localizedDescription
+            alert.beginSheetModal(for: window)
+        }
+    }
+
+    func wake(_ id: SleepingTab.ID) {
+        guard let window else { return }
+        TabSleepStore.shared.wake(id, from: window)
+    }
+
     // MARK: Attention
 
     /// Select the next tab needing attention after the selected one, in any
@@ -463,6 +490,7 @@ final class TabSidebarModel: ObservableObject {
                   store.workspaceID(of: terminal) == id else { continue }
             terminal.workspaceID = fallback.id
         }
+        TabSleepStore.shared.reassign(from: id, to: fallback.id)
         store.delete(id)
         switchWorkspace(store.activeID)
     }
@@ -502,18 +530,7 @@ final class TabSidebarModel: ObservableObject {
         let workspace = store.active
         let layoutTabs = tabWindows
             .filter { ($0 as? TerminalWindow)?.isTabPinned != true && store.workspaceID(of: $0) == workspace.id }
-            .compactMap { window -> TabLayout.Tab? in
-                guard let controller = window.windowController as? TerminalController,
-                      let root = controller.surfaceTree.root else { return nil }
-                let color = (window as? TerminalWindow)?.tabColor ?? .none
-                let pane = Self.layoutPane(root)
-                return TabLayout.Tab(
-                    title: controller.titleOverride,
-                    cwd: pane.cwd,
-                    run: nil,
-                    color: color == .none ? nil : color.localizedName.lowercased(),
-                    split: pane.split)
-            }
+            .compactMap(Self.layoutTab(of:))
 
         do {
             try TabLayoutStore.save(TabLayout(name: workspace.name, icon: workspace.icon, tabs: layoutTabs))
@@ -540,19 +557,41 @@ final class TabSidebarModel: ObservableObject {
               let ghostty = (parent.windowController as? BaseTerminalController)?.ghostty else { return }
 
         for tab in layout.tabs.isEmpty ? [TabLayout.Tab()] : layout.tabs {
-            let pane = tab.rootPane
-            guard let controller = TerminalController.newTab(
-                ghostty,
-                from: parent,
-                withBaseConfig: pane.leading.surfaceConfiguration) else { continue }
-            if let surface = controller.surfaceTree.first {
-                Self.buildSplits(pane, at: surface, in: controller)
-            }
-            if let title = tab.title, !title.isEmpty { controller.titleOverride = title }
-            if let name = tab.color, let color = TerminalTabColor(name: name) {
-                (controller.window as? TerminalWindow)?.tabColor = color
-            }
+            Self.openTab(tab, from: parent, ghostty: ghostty)
         }
+    }
+
+    /// Open a tab described by a layout next to `parent`, with its splits,
+    /// title and color.
+    @discardableResult
+    static func openTab(_ tab: TabLayout.Tab, from parent: NSWindow, ghostty: Ghostty.App) -> TerminalController? {
+        let pane = tab.rootPane
+        guard let controller = TerminalController.newTab(
+            ghostty,
+            from: parent,
+            withBaseConfig: pane.leading.surfaceConfiguration) else { return nil }
+        if let surface = controller.surfaceTree.first {
+            buildSplits(pane, at: surface, in: controller)
+        }
+        if let title = tab.title, !title.isEmpty { controller.titleOverride = title }
+        if let name = tab.color, let color = TerminalTabColor(name: name) {
+            (controller.window as? TerminalWindow)?.tabColor = color
+        }
+        return controller
+    }
+
+    /// Describe an open tab as a layout tab: its splits, title and color.
+    static func layoutTab(of window: NSWindow) -> TabLayout.Tab? {
+        guard let controller = window.windowController as? TerminalController,
+              let root = controller.surfaceTree.root else { return nil }
+        let color = (window as? TerminalWindow)?.tabColor ?? .none
+        let pane = layoutPane(root)
+        return TabLayout.Tab(
+            title: controller.titleOverride,
+            cwd: pane.cwd,
+            run: nil,
+            color: color == .none ? nil : color.localizedName.lowercased(),
+            split: pane.split)
     }
 
     /// Convert a split tree node to a layout pane.
@@ -726,6 +765,7 @@ struct TabSidebarContainer<Content: View>: View {
 struct TabSidebarView: View {
     @ObservedObject var model: TabSidebarModel
     @ObservedObject private var store = TabWorkspaceStore.shared
+    @ObservedObject private var sleepStore = TabSleepStore.shared
     @State private var draggingID: TabSidebarModel.Tab.ID?
     @State private var query = ""
 
@@ -802,6 +842,10 @@ struct TabSidebarView: View {
                     LazyVStack(spacing: 2) {
                         ForEach(model.workspaceTabs) { tab in
                             reorderable(TabSidebarRow(tab: tab, model: model), id: tab.id)
+                        }
+
+                        ForEach(model.sleepingTabs) { sleeping in
+                            TabSidebarSleepingRow(sleeping: sleeping, model: model)
                         }
                     }
                 }
@@ -1182,6 +1226,48 @@ private struct TabCommandBadge: View {
     }
 }
 
+/// An unloaded tab: dimmed, with a moon. Clicking opens it again.
+private struct TabSidebarSleepingRow: View {
+    let sleeping: SleepingTab
+    let model: TabSidebarModel
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 10))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(sleeping.title)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                if let directory = sleeping.directory {
+                    Text(directory)
+                        .font(.system(size: 10))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 4)
+        }
+        .foregroundStyle(.secondary)
+        .opacity(isHovering ? 0.9 : 0.6)
+        .padding(.horizontal, 10)
+        .frame(height: sleeping.directory == nil ? 30 : 40)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(isHovering ? 0.07 : 0)))
+        .contentShape(Rectangle())
+        .help("Unloaded \(sleeping.sleptAt.formatted(.relative(presentation: .named))). Click to open it again.")
+        .onHover { isHovering = $0 }
+        .onTapGesture { model.wake(sleeping.id) }
+        .contextMenu {
+            Button("Open Tab") { model.wake(sleeping.id) }
+            Button("Close Tab") { TabSleepStore.shared.remove(sleeping.id) }
+        }
+    }
+}
+
 /// Tab layout options shared by the sidebar menus.
 struct TabSidebarLayoutMenu: View {
     @ObservedObject private var state = TabSidebarState.shared
@@ -1257,6 +1343,9 @@ private struct TabSidebarContextMenu: View {
             }
         }
         Divider()
+        if !tab.isPinned {
+            Button("Unload Tab") { model.unload(tab.id) }
+        }
         Button("Close Tab") { model.close(tab.id) }
         Button("Close Other Tabs") { model.closeOthers(tab.id) }
         Divider()
