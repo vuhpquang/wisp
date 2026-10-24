@@ -139,6 +139,43 @@ struct TabLayout: Codable, Identifiable, Equatable {
 
         /// A tab color name such as `blue` or `green`.
         var color: String?
+
+        /// Splits inside the tab. When set, `cwd` and `run` are ignored and
+        /// each pane has its own.
+        var split: Split?
+
+        /// The root pane of the tab.
+        var rootPane: Pane {
+            Pane(cwd: cwd, run: run, split: split)
+        }
+    }
+
+    /// One terminal in a tab, or a split of two more panes.
+    struct Pane: Codable, Equatable {
+        var cwd: String?
+        var run: String?
+        var split: Split?
+
+        /// The pane that keeps the original terminal when this pane is split:
+        /// the first pane, recursively.
+        var leading: Pane {
+            split?.panes.first?.leading ?? self
+        }
+
+        var surfaceConfiguration: Ghostty.SurfaceConfiguration {
+            var config = Ghostty.SurfaceConfiguration()
+            config.workingDirectory = cwd.map { ($0 as NSString).expandingTildeInPath }
+            if let run, !run.isEmpty { config.initialInput = run + "\n" }
+            return config
+        }
+    }
+
+    struct Split: Codable, Equatable {
+        /// `right` puts the panes side by side, `down` stacks them.
+        var direction: String
+
+        /// Exactly two panes.
+        var panes: [Pane]
     }
 }
 
@@ -177,7 +214,13 @@ enum TabLayoutStore {
         if !FileManager.default.fileExists(atPath: fileURL.path) {
             try? save(TabLayout(name: "Example", icon: "🧪", tabs: [
                 .init(title: "Home", cwd: "~", run: nil, color: "blue"),
-                .init(title: nil, cwd: "~/Downloads", run: "ls", color: nil),
+                .init(title: "Split", color: "green", split: .init(direction: "right", panes: [
+                    .init(cwd: "~", run: "ls"),
+                    .init(split: .init(direction: "down", panes: [
+                        .init(cwd: "~/Downloads"),
+                        .init(cwd: "~/Desktop"),
+                    ])),
+                ])),
             ]))
         }
         NSWorkspace.shared.open(fileURL)

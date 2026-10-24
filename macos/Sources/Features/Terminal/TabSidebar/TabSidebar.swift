@@ -443,13 +443,16 @@ final class TabSidebarModel: ObservableObject {
         let layoutTabs = tabWindows
             .filter { ($0 as? TerminalWindow)?.isTabPinned != true && store.workspaceID(of: $0) == workspace.id }
             .compactMap { window -> TabLayout.Tab? in
-                guard let controller = window.windowController as? TerminalController else { return nil }
+                guard let controller = window.windowController as? TerminalController,
+                      let root = controller.surfaceTree.root else { return nil }
                 let color = (window as? TerminalWindow)?.tabColor ?? .none
+                let pane = Self.layoutPane(root)
                 return TabLayout.Tab(
                     title: controller.titleOverride,
-                    cwd: controller.focusedSurface?.pwd.map { ($0 as NSString).abbreviatingWithTildeInPath },
+                    cwd: pane.cwd,
                     run: nil,
-                    color: color == .none ? nil : color.localizedName.lowercased())
+                    color: color == .none ? nil : color.localizedName.lowercased(),
+                    split: pane.split)
             }
 
         do {
@@ -477,16 +480,51 @@ final class TabSidebarModel: ObservableObject {
               let ghostty = (parent.windowController as? BaseTerminalController)?.ghostty else { return }
 
         for tab in layout.tabs.isEmpty ? [TabLayout.Tab()] : layout.tabs {
-            var config = Ghostty.SurfaceConfiguration()
-            config.workingDirectory = tab.cwd.map { ($0 as NSString).expandingTildeInPath }
-            if let run = tab.run, !run.isEmpty { config.initialInput = run + "\n" }
-
-            guard let controller = TerminalController.newTab(ghostty, from: parent, withBaseConfig: config) else { continue }
+            let pane = tab.rootPane
+            guard let controller = TerminalController.newTab(
+                ghostty,
+                from: parent,
+                withBaseConfig: pane.leading.surfaceConfiguration) else { continue }
+            if let surface = controller.surfaceTree.first {
+                Self.buildSplits(pane, at: surface, in: controller)
+            }
             if let title = tab.title, !title.isEmpty { controller.titleOverride = title }
             if let name = tab.color, let color = TerminalTabColor(name: name) {
                 (controller.window as? TerminalWindow)?.tabColor = color
             }
         }
+    }
+
+    /// Convert a split tree node to a layout pane.
+    private static func layoutPane(_ node: SplitTree<Ghostty.SurfaceView>.Node) -> TabLayout.Pane {
+        switch node {
+        case .leaf(let view):
+            return .init(cwd: view.pwd.map { ($0 as NSString).abbreviatingWithTildeInPath })
+        case .split(let split):
+            return .init(split: .init(
+                direction: split.direction == .horizontal ? "right" : "down",
+                panes: [layoutPane(split.left), layoutPane(split.right)]))
+        }
+    }
+
+    /// Create the splits of a layout pane. `surface` is the terminal for the
+    /// pane, already created with the configuration of its leading pane.
+    private static func buildSplits(
+        _ pane: TabLayout.Pane,
+        at surface: Ghostty.SurfaceView,
+        in controller: TerminalController
+    ) {
+        guard let split = pane.split, split.panes.count == 2 else { return }
+        let first = split.panes[0]
+        let second = split.panes[1]
+
+        guard let newSurface = controller.newSplit(
+            at: surface,
+            direction: split.direction == "down" ? .down : .right,
+            baseConfig: second.leading.surfaceConfiguration) else { return }
+
+        buildSplits(first, at: surface, in: controller)
+        buildSplits(second, at: newSurface, in: controller)
     }
 
     /// Pinned tabs are shown as tiles at the top of the sidebar and are kept
