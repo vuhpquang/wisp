@@ -57,6 +57,7 @@ class QuickTerminalController: BaseTerminalController {
         // that we don't start a terminal process. This gets started when the
         // first terminal is shown in `animateIn`.
         super.init(ghostty, baseConfig: base, surfaceTree: .init())
+        resetFrameCacheIfConfigChanged(ghostty.config)
 
         // Setup our notifications for behaviors
         let center = NotificationCenter.default
@@ -724,10 +725,23 @@ class QuickTerminalController: BaseTerminalController {
 
         // Update our derived config
         self.derivedConfig = DerivedConfig(config)
+        resetFrameCacheIfConfigChanged(config)
 
         syncAppearance()
 
         terminalViewContainer?.ghosttyConfigDidChange(config, preferredBackgroundColor: nil)
+    }
+
+    /// Wisp: a saved frame wins over the configured size, so changing
+    /// quick-terminal-position or quick-terminal-size had no effect until the
+    /// frame was resized by hand. Forget saved frames when either changes, also
+    /// across launches since the frames are restored with the app.
+    private func resetFrameCacheIfConfigChanged(_ config: Ghostty.Config) {
+        let key = "WispQuickTerminalConfigSignature"
+        let signature = "\(config.quickTerminalPosition.rawValue)|\(String(describing: config.quickTerminalSize))"
+        guard UserDefaults.ghostty.string(forKey: key) != signature else { return }
+        UserDefaults.ghostty.set(signature, forKey: key)
+        screenStateCache.clear()
     }
 
     @objc private func onNewTab(notification: SwiftUI.Notification) {

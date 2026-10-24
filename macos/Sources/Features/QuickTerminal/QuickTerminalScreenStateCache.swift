@@ -46,6 +46,11 @@ class QuickTerminalScreenStateCache {
         pruneCapacity()
     }
 
+    /// Forget every saved frame.
+    func clear() {
+        stateByDisplay.removeAll()
+    }
+
     /// Retrieve the last closed frame for a screen, if valid.
     func frame(for screen: NSScreen) -> NSRect? {
         guard let key = screen.displayUUID, var entry = stateByDisplay[key] else { return nil }
