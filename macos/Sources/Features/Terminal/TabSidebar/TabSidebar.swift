@@ -402,8 +402,28 @@ final class TabSidebarModel: ObservableObject {
         (window?.windowController as? TerminalController)?.newTab(nil)
     }
 
+    /// The tab being renamed in place, set by double-clicking it or from its
+    /// menu. The row shows a text field while it's set.
+    @Published var renamingID: Tab.ID?
+
     func rename(_ id: Tab.ID) {
-        (window(for: id)?.windowController as? BaseTerminalController)?.promptTabTitle()
+        renamingID = id
+    }
+
+    /// The text to start renaming with: the custom title, else the terminal's.
+    func editableTitle(_ id: Tab.ID) -> String {
+        guard let window = window(for: id) else { return "" }
+        return (window.windowController as? BaseTerminalController)?.titleOverride ?? window.title
+    }
+
+    /// Set a tab's title. An empty title goes back to the terminal's own.
+    func finishRenaming(_ id: Tab.ID, title: String?) {
+        renamingID = nil
+        defer { select(id) } // also gives the terminal its focus back
+        guard let title,
+              let controller = window(for: id)?.windowController as? BaseTerminalController else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        controller.titleOverride = trimmed.isEmpty ? nil : trimmed
     }
 
     func setColor(_ color: TerminalTabColor, for id: Tab.ID) {
@@ -1443,6 +1463,10 @@ private struct TabSidebarRow: View {
     var showsWorkspace = false
     @ObservedObject private var state = TabSidebarState.shared
     @State private var isHovering = false
+    @State private var draft = ""
+    @FocusState private var titleFocused: Bool
+
+    private var isRenaming: Bool { model.renamingID == tab.id }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1463,11 +1487,24 @@ private struct TabSidebarRow: View {
             }
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(tab.title)
-                    .font(.system(size: 12, weight: tab.isSelected ? .semibold : .regular))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(tab.isSelected ? .primary : .secondary)
+                if isRenaming {
+                    // Return saves, Escape cancels, clicking elsewhere saves.
+                    TextField("Tab title", text: $draft)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, weight: .semibold))
+                        .focused($titleFocused)
+                        .onSubmit { model.finishRenaming(tab.id, title: draft) }
+                        .onExitCommand { model.finishRenaming(tab.id, title: nil) }
+                        .onChange(of: titleFocused) { focused in
+                            if !focused, isRenaming { model.finishRenaming(tab.id, title: draft) }
+                        }
+                } else {
+                    Text(tab.title)
+                        .font(.system(size: 12, weight: tab.isSelected ? .semibold : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(tab.isSelected ? .primary : .secondary)
+                }
 
                 if state.showsDetails, subtitle != nil || tab.command != nil {
                     HStack(spacing: 4) {
@@ -1517,7 +1554,15 @@ private struct TabSidebarRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .modifier(TabPreviewOnHover(tab: tab, model: model, isHovering: isHovering))
-        .onTapGesture { model.select(tab.id) }
+        // Selecting happens on the first click so it isn't delayed while
+        // waiting to see whether a second click follows.
+        .onTapGesture(count: 2) { model.rename(tab.id) }
+        .simultaneousGesture(TapGesture().onEnded { if !isRenaming { model.select(tab.id) } })
+        .onChange(of: model.renamingID) { id in
+            guard id == tab.id else { return }
+            draft = model.editableTitle(tab.id)
+            DispatchQueue.main.async { titleFocused = true }
+        }
         .contextMenu { TabSidebarContextMenu(tab: tab, model: model) }
     }
 
