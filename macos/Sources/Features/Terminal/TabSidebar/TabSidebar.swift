@@ -100,15 +100,27 @@ final class TabSidebarModel: ObservableObject {
         let keyEquivalent: String
         let hasBell: Bool
         let isPinned: Bool
+        let workspaceID: UUID
     }
 
     @Published private(set) var tabs: [Tab] = []
 
     var pinnedTabs: [Tab] { tabs.filter(\.isPinned) }
-    var unpinnedTabs: [Tab] { tabs.filter { !$0.isPinned } }
+
+    /// The unpinned tabs of the active workspace.
+    var workspaceTabs: [Tab] {
+        let active = TabWorkspaceStore.shared.activeID
+        return tabs.filter { !$0.isPinned && $0.workspaceID == active }
+    }
+
+    /// Tabs per workspace, used to show which workspaces are empty.
+    func tabCount(in id: UUID) -> Int {
+        tabs.filter { !$0.isPinned && $0.workspaceID == id }.count
+    }
 
     private weak var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
+    private var cancellables: Set<AnyCancellable> = []
     private var reloadScheduled = false
 
     init(window: NSWindow) {
@@ -127,6 +139,20 @@ final class TabSidebarModel: ObservableObject {
                 self?.scheduleReload()
             })
         }
+
+        // Workspace changes alter which tabs are shown and numbered.
+        let store = TabWorkspaceStore.shared
+        store.$activeID.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in
+                self?.scheduleReload()
+                DispatchQueue.main.async {
+                    (self?.window?.tabGroup?.selectedWindow?.windowController as? TerminalController)?.relabelTabs()
+                }
+            }
+            .store(in: &cancellables)
+        store.$workspaces.dropFirst()
+            .sink { [weak self] _ in self?.scheduleReload() }
+            .store(in: &cancellables)
 
         TabSidebarState.shared.installMouseMonitorIfNeeded()
         reload()
@@ -160,10 +186,13 @@ final class TabSidebarModel: ObservableObject {
                 isSelected: w === selected,
                 keyEquivalent: terminal?.keyEquivalent ?? "",
                 hasBell: (w.windowController as? BaseTerminalController)?.bell ?? false,
-                isPinned: terminal?.isTabPinned ?? false)
+                isPinned: terminal?.isTabPinned ?? false,
+                workspaceID: TabWorkspaceStore.shared.workspaceID(of: w))
         }
 
-        if newTabs != tabs { tabs = newTabs }
+        // Always publish: the active workspace may have changed even when the
+        // tabs did not.
+        tabs = newTabs
     }
 
     private var tabWindows: [NSWindow] {
@@ -203,6 +232,152 @@ final class TabSidebarModel: ObservableObject {
 
     func setColor(_ color: TerminalTabColor, for id: Tab.ID) {
         (window(for: id) as? TerminalWindow)?.tabColor = color
+    }
+
+    // MARK: Workspaces
+
+    /// Make a workspace active and select its last used tab, opening a new tab
+    /// if the workspace has none.
+    func switchWorkspace(_ id: UUID) {
+        let store = TabWorkspaceStore.shared
+        store.activate(id)
+
+        let candidates = tabWindows.filter {
+            ($0 as? TerminalWindow)?.isTabPinned != true && store.workspaceID(of: $0) == id
+        }
+        if let last = store.lastSelectedWindow(in: id), candidates.contains(where: { $0 === last }) {
+            select(ObjectIdentifier(last))
+        } else if let first = candidates.first {
+            select(ObjectIdentifier(first))
+        } else {
+            newTab()
+        }
+    }
+
+    func moveTab(_ id: Tab.ID, toWorkspace workspaceID: UUID) {
+        guard let window = window(for: id) as? TerminalWindow else { return }
+        let wasSelected = window === window.tabGroup?.selectedWindow
+        window.isTabPinned = false
+        window.workspaceID = workspaceID
+
+        // Follow the selected tab so it doesn't vanish from under the user.
+        if wasSelected { switchWorkspace(workspaceID) }
+    }
+
+    func promptNewWorkspace() {
+        promptWorkspace(title: "New Workspace", name: "", icon: "📁") { [weak self] name, icon in
+            let workspace = TabWorkspaceStore.shared.create(name: name, icon: icon)
+            self?.switchWorkspace(workspace.id)
+        }
+    }
+
+    func promptEditWorkspace(_ workspace: TabWorkspace) {
+        promptWorkspace(title: "Edit Workspace", name: workspace.name, icon: workspace.icon) { name, icon in
+            TabWorkspaceStore.shared.update(workspace.id, name: name, icon: icon)
+        }
+    }
+
+    /// Delete a workspace after moving its tabs to the first other workspace.
+    func deleteWorkspace(_ id: UUID) {
+        let store = TabWorkspaceStore.shared
+        guard let fallback = store.workspaces.first(where: { $0.id != id }) else { return }
+        for window in tabWindows {
+            guard let terminal = window as? TerminalWindow,
+                  store.workspaceID(of: terminal) == id else { continue }
+            terminal.workspaceID = fallback.id
+        }
+        store.delete(id)
+        switchWorkspace(store.activeID)
+    }
+
+    private func promptWorkspace(
+        title: String,
+        name: String,
+        icon: String,
+        completion: @escaping (String, String) -> Void
+    ) {
+        guard let window else { return }
+
+        let iconField = NSTextField(frame: NSRect(x: 0, y: 0, width: 44, height: 24))
+        iconField.stringValue = icon
+        iconField.alignment = .center
+        let nameField = NSTextField(frame: NSRect(x: 52, y: 0, width: 198, height: 24))
+        nameField.stringValue = name
+        nameField.placeholderString = "Name"
+        let fields = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+        fields.addSubview(iconField)
+        fields.addSubview(nameField)
+
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "Pick an emoji icon and a name."
+        alert.accessoryView = fields
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = nameField
+
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { return }
+            let icon = iconField.stringValue.trimmingCharacters(in: .whitespaces)
+            completion(name, icon.isEmpty ? String(name.prefix(1)) : String(icon.prefix(2)))
+        }
+    }
+
+    // MARK: Layouts
+
+    /// Save the tabs of the active workspace as a layout named after it.
+    func saveWorkspaceAsLayout() {
+        let store = TabWorkspaceStore.shared
+        let workspace = store.active
+        let layoutTabs = tabWindows
+            .filter { ($0 as? TerminalWindow)?.isTabPinned != true && store.workspaceID(of: $0) == workspace.id }
+            .compactMap { window -> TabLayout.Tab? in
+                guard let controller = window.windowController as? TerminalController else { return nil }
+                let color = (window as? TerminalWindow)?.tabColor ?? .none
+                return TabLayout.Tab(
+                    title: controller.titleOverride,
+                    cwd: controller.focusedSurface?.pwd.map { ($0 as NSString).abbreviatingWithTildeInPath },
+                    run: nil,
+                    color: color == .none ? nil : color.localizedName.lowercased())
+            }
+
+        do {
+            try TabLayoutStore.save(TabLayout(name: workspace.name, icon: workspace.icon, tabs: layoutTabs))
+        } catch {
+            Ghostty.logger.warning("failed to save tab layout: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Open a layout as a workspace. If a workspace with the layout's name already
+    /// has tabs, switch to it instead of opening the tabs again.
+    func openLayout(_ layout: TabLayout) {
+        let store = TabWorkspaceStore.shared
+        if let existing = store.workspaces.first(where: { $0.name == layout.name }),
+           tabCount(in: existing.id) > 0 {
+            switchWorkspace(existing.id)
+            return
+        }
+
+        let workspace = store.workspaces.first { $0.name == layout.name }
+            ?? store.create(name: layout.name, icon: layout.icon ?? String(layout.name.prefix(1)))
+        store.activate(workspace.id)
+
+        guard let parent = window,
+              let ghostty = (parent.windowController as? BaseTerminalController)?.ghostty else { return }
+
+        for tab in layout.tabs.isEmpty ? [TabLayout.Tab()] : layout.tabs {
+            var config = Ghostty.SurfaceConfiguration()
+            config.workingDirectory = tab.cwd.map { ($0 as NSString).expandingTildeInPath }
+            if let run = tab.run, !run.isEmpty { config.initialInput = run + "\n" }
+
+            guard let controller = TerminalController.newTab(ghostty, from: parent, withBaseConfig: config) else { continue }
+            if let title = tab.title, !title.isEmpty { controller.titleOverride = title }
+            if let name = tab.color, let color = TerminalTabColor(name: name) {
+                (controller.window as? TerminalWindow)?.tabColor = color
+            }
+        }
     }
 
     /// Pinned tabs are shown as tiles at the top of the sidebar and are kept
@@ -343,6 +518,7 @@ struct TabSidebarContainer<Content: View>: View {
 
 struct TabSidebarView: View {
     @ObservedObject var model: TabSidebarModel
+    @ObservedObject private var store = TabWorkspaceStore.shared
     @State private var draggingID: TabSidebarModel.Tab.ID?
 
     var body: some View {
@@ -359,8 +535,21 @@ struct TabSidebarView: View {
                         Divider().opacity(0.5)
                     }
 
+                    HStack(spacing: 6) {
+                        Text(store.active.icon)
+                        Text(store.active.name)
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 2)
+                    .contextMenu { TabWorkspaceMenu(workspace: store.active, model: model) }
+
                     LazyVStack(spacing: 2) {
-                        ForEach(model.unpinnedTabs) { tab in
+                        ForEach(model.workspaceTabs) { tab in
                             reorderable(TabSidebarRow(tab: tab, model: model), id: tab.id)
                         }
                     }
@@ -385,7 +574,11 @@ struct TabSidebarView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.top, 6)
+
+            TabWorkspaceBar(model: model)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
         }
     }
 
@@ -403,6 +596,80 @@ struct TabSidebarView: View {
                 target: id,
                 model: model,
                 draggingID: $draggingID))
+    }
+}
+
+/// Workspace switcher at the bottom of the sidebar, like Zen's.
+private struct TabWorkspaceBar: View {
+    @ObservedObject var model: TabSidebarModel
+    @ObservedObject private var store = TabWorkspaceStore.shared
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(store.workspaces) { workspace in
+                        let isActive = workspace.id == store.activeID
+                        Button {
+                            model.switchWorkspace(workspace.id)
+                        } label: {
+                            Text(workspace.icon)
+                                .font(.system(size: 14))
+                                .frame(width: 28, height: 26)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(Color.primary.opacity(isActive ? 0.16 : 0)))
+                                .opacity(isActive || model.tabCount(in: workspace.id) > 0 ? 1 : 0.5)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(workspace.name)
+                        .contextMenu { TabWorkspaceMenu(workspace: workspace, model: model) }
+                    }
+                }
+            }
+
+            Menu {
+                Button("New Workspace…", action: model.promptNewWorkspace)
+
+                Divider()
+
+                let layouts = TabLayoutStore.load()
+                if layouts.isEmpty {
+                    Text("No Saved Layouts")
+                } else {
+                    ForEach(layouts) { layout in
+                        Button("Open \(layout.icon ?? "") \(layout.name)") { model.openLayout(layout) }
+                    }
+                }
+
+                Divider()
+
+                Button("Save Workspace as Layout", action: model.saveWorkspaceAsLayout)
+                Button("Edit Layouts File…") { TabLayoutStore.openFile() }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .foregroundStyle(.secondary)
+            .help("Workspaces and Layouts")
+        }
+        .frame(height: 30)
+    }
+}
+
+/// Context menu for a workspace.
+private struct TabWorkspaceMenu: View {
+    let workspace: TabWorkspace
+    let model: TabSidebarModel
+
+    var body: some View {
+        Button("Edit Workspace…") { model.promptEditWorkspace(workspace) }
+        Button("Delete Workspace") { model.deleteWorkspace(workspace.id) }
+            .disabled(TabWorkspaceStore.shared.workspaces.count <= 1)
     }
 }
 
@@ -466,6 +733,14 @@ private struct TabSidebarContextMenu: View {
     var body: some View {
         Button(tab.isPinned ? "Unpin Tab" : "Pin Tab") { model.togglePin(tab.id) }
         Button("Rename Tab…") { model.rename(tab.id) }
+        Menu("Move to Workspace") {
+            ForEach(TabWorkspaceStore.shared.workspaces) { workspace in
+                Button("\(workspace.icon) \(workspace.name)") {
+                    model.moveTab(tab.id, toWorkspace: workspace.id)
+                }
+                .disabled(!tab.isPinned && workspace.id == tab.workspaceID)
+            }
+        }
         Menu("Tab Color") {
             ForEach(TerminalTabColor.allCases, id: \.self) { color in
                 Button(color.localizedName) { model.setColor(color, for: tab.id) }

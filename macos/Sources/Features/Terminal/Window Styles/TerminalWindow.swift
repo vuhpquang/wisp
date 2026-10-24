@@ -80,6 +80,15 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// The workspace this tab belongs to. See `TabWorkspaceStore`.
+    var workspaceID: UUID? {
+        didSet {
+            guard workspaceID != oldValue else { return }
+            invalidateRestorableState()
+            NotificationCenter.default.post(name: TabSidebarState.tabsDidChange, object: self)
+        }
+    }
+
     /// Whether this window shows its tabs in the vertical sidebar instead of the
     /// native tab bar. Titlebar tabs keep the native tabs since they live in
     /// the titlebar itself.
@@ -126,6 +135,11 @@ class TerminalWindow: NSWindow {
         // Setup our initial config
         derivedConfig = .init(config)
         usesVerticalTabs = config.macosVerticalTabs && derivedConfig.macosTitlebarStyle != .tabs
+
+        // New tabs open in the active workspace. Restoration overrides this.
+        if usesVerticalTabs {
+            workspaceID = TabWorkspaceStore.shared.activeID
+        }
 
         // If there is a hardcoded title in the configuration, we set that
         // immediately. Future `set_title` apprt actions will override this

@@ -597,7 +597,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // otherwise the accessory view doesn't matter.
         tabListenForFrame = window?.tabbedWindows?.count ?? 0 > 1
 
-        if let windows = window?.tabbedWindows as? [TerminalWindow] {
+        if let allWindows = window?.tabbedWindows as? [TerminalWindow] {
+            // Tabs outside the active workspace can't be reached by number.
+            let windows = TabWorkspaceStore.shared.navigableWindows(allWindows).compactMap { $0 as? TerminalWindow }
+            for window in allWindows where !windows.contains(window) {
+                window.keyEquivalent = ""
+            }
+
             for (tab, window) in zip(1..., windows) {
                 // We need to clear any windows beyond this because they have had
                 // a keyEquivalent set previously.
@@ -1632,7 +1638,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         guard let windowController = window.windowController else { return }
         guard let tabGroup = windowController.window?.tabGroup else { return }
-        let tabbedWindows = tabGroup.windows
+        let tabbedWindows = TabWorkspaceStore.shared.navigableWindows(tabGroup.windows)
+        guard !tabbedWindows.isEmpty else { return }
 
         // This will be the index we want to actual go to
         let finalIndex: Int
