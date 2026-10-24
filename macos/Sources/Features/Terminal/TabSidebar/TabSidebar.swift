@@ -167,6 +167,22 @@ final class TabSidebarModel: ObservableObject {
         /// Rang the bell, reported an error or finished a long command since
         /// the user last looked at it.
         let needsAttention: Bool
+
+        /// The sidebar tab group, if the tab is in one that still exists.
+        let groupID: UUID?
+    }
+
+    /// A row of the workspace's tab list: a tab, or a group's label.
+    enum Item: Identifiable {
+        case tab(Tab)
+        case group(TabGroup, count: Int)
+
+        var id: String {
+            switch self {
+            case .tab(let tab): "tab-\(tab.id.hashValue)"
+            case .group(let group, _): "group-\(group.id)"
+            }
+        }
     }
 
     /// What the programs in a tab report through progress reports (OSC 9;4).
@@ -255,6 +271,9 @@ final class TabSidebarModel: ObservableObject {
         store.$workspaces.dropFirst()
             .sink { [weak self] _ in self?.scheduleReload(after: 0) }
             .store(in: &cancellables)
+        TabGroupStore.shared.$groups.dropFirst()
+            .sink { [weak self] _ in self?.scheduleReload(after: 0) }
+            .store(in: &cancellables)
 
         TabSidebarState.shared.installMouseMonitorIfNeeded()
         TabSleepStore.shared.startAutoUnload()
@@ -310,7 +329,8 @@ final class TabSidebarModel: ObservableObject {
                 directory: pwd.map { ($0 as NSString).abbreviatingWithTildeInPath },
                 branch: pwd.flatMap(TabGitInfo.branch(at:)),
                 command: surface.flatMap(TabCommandTracker.shared.state(of:)),
-                needsAttention: !isSelected && (hasBell || activity == .error || Self.finishedUnseen(w)))
+                needsAttention: !isSelected && (hasBell || activity == .error || Self.finishedUnseen(w)),
+                groupID: TabGroupStore.shared.group(terminal?.tabGroupID)?.id)
         }
 
         // Views read the active workspace from the store directly, so only
@@ -428,6 +448,124 @@ final class TabSidebarModel: ObservableObject {
 
     func setColor(_ color: TerminalTabColor, for id: Tab.ID) {
         (window(for: id) as? TerminalWindow)?.tabColor = color
+    }
+
+    // MARK: Tab groups
+
+    /// The workspace's tabs with each group's label before its tabs. A group's
+    /// tabs are listed together where its first tab is. A collapsed group only
+    /// shows its selected tab.
+    var workspaceItems: [Item] {
+        let tabs = workspaceTabs
+        let store = TabGroupStore.shared
+        var items: [Item] = []
+        var listed = Set<UUID>()
+
+        for tab in tabs {
+            guard let groupID = tab.groupID, let group = store.group(groupID) else {
+                items.append(.tab(tab))
+                continue
+            }
+            guard listed.insert(groupID).inserted else { continue }
+
+            let members = tabs.filter { $0.groupID == groupID }
+            items.append(.group(group, count: members.count))
+            for member in members where !group.isCollapsed || member.isSelected {
+                items.append(.tab(member))
+            }
+        }
+        return items
+    }
+
+    /// Groups with tabs in the active workspace, in sidebar order.
+    var visibleGroups: [TabGroup] {
+        workspaceItems.compactMap { item in
+            if case .group(let group, _) = item { return group }
+            return nil
+        }
+    }
+
+    func toggleCollapsed(_ groupID: UUID) {
+        TabGroupStore.shared.update(groupID) { $0.isCollapsed.toggle() }
+    }
+
+    /// Put a tab in a group (nil removes it from its group). It moves next to
+    /// the group's other tabs.
+    func addTab(_ id: Tab.ID, toGroup groupID: UUID?) {
+        guard let window = window(for: id) as? TerminalWindow else { return }
+        let previous = window.tabGroupID
+        window.tabGroupID = groupID
+        if let groupID { moveNextToGroup(window, groupID: groupID) }
+        if let previous { deleteGroupIfEmpty(previous) }
+    }
+
+    func promptNewGroup(with tabID: Tab.ID) {
+        promptGroupName(title: "New Tab Group", name: "") { [weak self] name in
+            let group = TabGroupStore.shared.create(name: name)
+            self?.addTab(tabID, toGroup: group.id)
+        }
+    }
+
+    func promptRenameGroup(_ group: TabGroup) {
+        promptGroupName(title: "Rename Tab Group", name: group.name) { name in
+            TabGroupStore.shared.update(group.id) { $0.name = name }
+        }
+    }
+
+    /// Keep the tabs, forget the group.
+    func ungroup(_ groupID: UUID) {
+        for window in members(of: groupID) { window.tabGroupID = nil }
+        TabGroupStore.shared.delete(groupID)
+    }
+
+    /// Close every tab in the group. Tabs running a program ask first.
+    func closeGroup(_ groupID: UUID) {
+        for window in members(of: groupID) {
+            (window.windowController as? TerminalController)?.closeTab(nil)
+        }
+        DispatchQueue.main.async { [weak self] in self?.deleteGroupIfEmpty(groupID) }
+    }
+
+    func newTab(inGroup groupID: UUID) {
+        guard let parent = window,
+              let ghostty = (parent.windowController as? BaseTerminalController)?.ghostty,
+              let controller = TerminalController.newTab(ghostty, from: parent),
+              let window = controller.window as? TerminalWindow else { return }
+        window.tabGroupID = groupID
+        moveNextToGroup(window, groupID: groupID)
+        TabGroupStore.shared.update(groupID) { $0.isCollapsed = false }
+    }
+
+    private func members(of groupID: UUID) -> [TerminalWindow] {
+        tabWindows.compactMap { $0 as? TerminalWindow }.filter { $0.tabGroupID == groupID }
+    }
+
+    private func moveNextToGroup(_ window: NSWindow, groupID: UUID) {
+        guard let last = members(of: groupID).last(where: { $0 !== window }) else { return }
+        reorder(window, relativeTo: last, ordered: .above)
+    }
+
+    private func deleteGroupIfEmpty(_ groupID: UUID) {
+        if members(of: groupID).isEmpty { TabGroupStore.shared.delete(groupID) }
+    }
+
+    private func promptGroupName(title: String, name: String, completion: @escaping (String) -> Void) {
+        guard let window else { return }
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = name
+        field.placeholderString = "Group name"
+
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { response in
+            let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard response == .alertFirstButtonReturn, !name.isEmpty else { return }
+            completion(name)
+        }
     }
 
     // MARK: Sleeping tabs
@@ -874,8 +1012,13 @@ struct TabSidebarView: View {
                     .contextMenu { TabWorkspaceMenu(workspace: store.active, model: model) }
 
                     LazyVStack(spacing: 2) {
-                        ForEach(model.workspaceTabs) { tab in
-                            reorderable(TabSidebarRow(tab: tab, model: model), id: tab.id)
+                        ForEach(model.workspaceItems) { item in
+                            switch item {
+                            case .tab(let tab):
+                                reorderable(groupedRow(tab), id: tab.id)
+                            case .group(let group, let count):
+                                TabGroupLabel(group: group, count: count, model: model)
+                            }
                         }
 
                         ForEach(model.sleepingTabs) { sleeping in
@@ -937,6 +1080,23 @@ struct TabSidebarView: View {
             TabWorkspaceBar(model: model)
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
+        }
+    }
+
+    /// A tab row, with its group's color along the left when it's in one.
+    @ViewBuilder
+    private func groupedRow(_ tab: TabSidebarModel.Tab) -> some View {
+        if let color = TabGroupStore.shared.group(tab.groupID)?.color.displayColor {
+            HStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color(nsColor: color))
+                    .frame(width: 3)
+                    .padding(.vertical, 4)
+                TabSidebarRow(tab: tab, model: model)
+            }
+            .padding(.leading, 6)
+        } else {
+            TabSidebarRow(tab: tab, model: model)
         }
     }
 
@@ -1417,6 +1577,8 @@ private struct TabSidebarContextMenu: View {
         }
         Divider()
         if !tab.isPinned {
+            TabGroupMenu(tab: tab, model: model)
+            Divider()
             Button("Unload Tab") { model.unload(tab.id) }
         }
         Button("Close Tab") { model.close(tab.id) }

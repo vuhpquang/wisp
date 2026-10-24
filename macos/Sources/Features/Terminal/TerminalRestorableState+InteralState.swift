@@ -19,6 +19,7 @@ extension TerminalRestorableState {
         // MARK: - Fork additions (optional, so older state still decodes)
         var isTabPinned: Bool? = nil
         var workspaceID: UUID? = nil
+        var tabGroupID: UUID? = nil
     }
 }
 
@@ -32,6 +33,7 @@ extension TerminalRestorableState.InternalState where ViewType == Ghostty.Surfac
             titleOverride: controller.titleOverride,
             isTabPinned: (controller.window as? TerminalWindow)?.isTabPinned,
             workspaceID: (controller.window as? TerminalWindow)?.workspaceID,
+            tabGroupID: (controller.window as? TerminalWindow)?.tabGroupID,
         )
     }
 }

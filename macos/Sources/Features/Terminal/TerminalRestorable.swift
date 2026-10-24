@@ -82,6 +82,9 @@ final class TerminalRestorableState: TerminalRestorable {
     var workspaceID: UUID? {
         internalState.workspaceID
     }
+    var tabGroupID: UUID? {
+        internalState.tabGroupID
+    }
 
     /// Internal State we use to perform unit tests
     ///
@@ -178,6 +181,7 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
         if let workspaceID = state.workspaceID {
             (window as? TerminalWindow)?.workspaceID = workspaceID
         }
+        (window as? TerminalWindow)?.tabGroupID = state.tabGroupID
 
         // Restore the tab title override
         c.titleOverride = state.titleOverride

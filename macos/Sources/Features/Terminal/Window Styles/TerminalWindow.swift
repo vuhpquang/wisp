@@ -89,6 +89,15 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// The sidebar tab group this tab belongs to. See `TabGroupStore`.
+    var tabGroupID: UUID? {
+        didSet {
+            guard tabGroupID != oldValue else { return }
+            invalidateRestorableState()
+            NotificationCenter.default.post(name: TabSidebarState.tabsDidChange, object: self)
+        }
+    }
+
     /// The sidebar model of this window when it uses vertical tabs.
     var tabSidebarModel: TabSidebarModel?
 
