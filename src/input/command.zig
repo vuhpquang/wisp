@@ -453,6 +453,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Toggle the tab overview."),
         }},
 
+        .goto_attention_tab => comptime &.{.{
+            .action = .goto_attention_tab,
+            .title = i18n.N_("Go to Tab Needing Attention"),
+            .description = i18n.N_("Go to the next tab that rang the bell or finished a long command."),
+        }},
+
         .toggle_tab_sidebar => comptime &.{.{
             .action = .toggle_tab_sidebar,
             .title = i18n.N_("Toggle Tab Sidebar"),

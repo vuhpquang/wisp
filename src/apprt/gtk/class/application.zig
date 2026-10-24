@@ -808,6 +808,7 @@ pub const Application = extern struct {
             .toggle_tab_sidebar,
             .goto_workspace,
             .command_started,
+            .goto_attention_tab,
             .close_all_windows,
             .float_window,
             .toggle_visibility,

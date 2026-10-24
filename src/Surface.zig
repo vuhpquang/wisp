@@ -5610,6 +5610,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             {},
         ),
 
+        .goto_attention_tab => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .goto_attention_tab,
+            {},
+        ),
+
         .goto_workspace => |n| return try self.rt_app.performAction(
             .{ .surface = self },
             .goto_workspace,

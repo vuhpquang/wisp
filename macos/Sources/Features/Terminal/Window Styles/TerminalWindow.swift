@@ -232,13 +232,19 @@ class TerminalWindow: NSWindow {
         super.close()
     }
 
+    /// When the user last looked at this tab. Commands that finish after this
+    /// make the tab need attention in the sidebar.
+    private(set) var lastViewedAt = Date()
+
     override func becomeKey() {
         super.becomeKey()
+        lastViewedAt = Date()
         resetZoomTabButton.contentTintColor = .controlAccentColor
     }
 
     override func resignKey() {
         super.resignKey()
+        lastViewedAt = Date()
         resetZoomTabButton.contentTintColor = .secondaryLabelColor
         tabTitleEditor.finishEditing(commit: true)
     }

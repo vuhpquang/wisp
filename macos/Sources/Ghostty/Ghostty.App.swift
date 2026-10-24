@@ -702,6 +702,13 @@ extension Ghostty {
                     DispatchQueue.main.async { TabCommandTracker.shared.started(surfaceView) }
                 }
 
+            case GHOSTTY_ACTION_GOTO_ATTENTION_TAB:
+                guard target.tag == GHOSTTY_TARGET_SURFACE,
+                      let surface = target.target.surface,
+                      let surfaceView = self.surfaceView(from: surface),
+                      let model = (surfaceView.window as? TerminalWindow)?.tabSidebarModel else { return false }
+                return model.gotoNextAttentionTab()
+
             case GHOSTTY_ACTION_GOTO_WORKSPACE:
                 return gotoWorkspace(app, target: target, index: Int(action.action.goto_workspace.index))
 

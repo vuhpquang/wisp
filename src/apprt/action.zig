@@ -374,6 +374,9 @@ pub const Action = union(Key) {
     /// with `command_finished`.
     command_started,
 
+    /// Go to the next tab that needs attention in the vertical tab sidebar.
+    goto_attention_tab,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -449,6 +452,7 @@ pub const Action = union(Key) {
         toggle_tab_sidebar,
         goto_workspace,
         command_started,
+        goto_attention_tab,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

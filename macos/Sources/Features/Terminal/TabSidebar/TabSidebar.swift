@@ -112,6 +112,10 @@ final class TabSidebarModel: ObservableObject {
         let directory: String?
         let branch: String?
         let command: TabCommandState?
+
+        /// Rang the bell, reported an error or finished a long command since
+        /// the user last looked at it.
+        let needsAttention: Bool
     }
 
     /// What the programs in a tab report through progress reports (OSC 9;4).
@@ -131,6 +135,17 @@ final class TabSidebarModel: ObservableObject {
     var workspaceTabs: [Tab] {
         let active = TabWorkspaceStore.shared.activeID
         return tabs.filter { !$0.isPinned && $0.workspaceID == active }
+    }
+
+    /// Tabs needing attention that aren't visible in the list: those in other
+    /// workspaces.
+    var hiddenAttentionTabs: [Tab] {
+        let active = TabWorkspaceStore.shared.activeID
+        return tabs.filter { $0.needsAttention && !$0.isPinned && $0.workspaceID != active }
+    }
+
+    func needsAttention(in id: UUID) -> Bool {
+        tabs.contains { $0.needsAttention && !$0.isPinned && $0.workspaceID == id }
     }
 
     /// Tabs per workspace, used to show which workspaces are empty.
@@ -204,24 +219,40 @@ final class TabSidebarModel: ObservableObject {
             let terminal = w as? TerminalWindow
             let surface = (w.windowController as? BaseTerminalController)?.focusedSurface
             let pwd = surface?.pwd.flatMap { $0.isEmpty ? nil : $0 }
+            let hasBell = (w.windowController as? BaseTerminalController)?.bell ?? false
+            let activity = Self.activity(of: w)
+            let isSelected = w === selected
             return Tab(
                 id: ObjectIdentifier(w),
                 title: w.title.isEmpty ? "👻" : w.title,
                 color: terminal?.tabColor ?? .none,
-                isSelected: w === selected,
+                isSelected: isSelected,
                 keyEquivalent: terminal?.keyEquivalent ?? "",
-                hasBell: (w.windowController as? BaseTerminalController)?.bell ?? false,
+                hasBell: hasBell,
                 isPinned: terminal?.isTabPinned ?? false,
                 workspaceID: TabWorkspaceStore.shared.workspaceID(of: w),
-                activity: Self.activity(of: w),
+                activity: activity,
                 directory: pwd.map { ($0 as NSString).abbreviatingWithTildeInPath },
                 branch: pwd.flatMap(TabGitInfo.branch(at:)),
-                command: surface.flatMap(TabCommandTracker.shared.state(of:)))
+                command: surface.flatMap(TabCommandTracker.shared.state(of:)),
+                needsAttention: !isSelected && (hasBell || activity == .error || Self.finishedUnseen(w)))
         }
 
         // Always publish: the active workspace may have changed even when the
         // tabs did not.
         tabs = newTabs
+    }
+
+    /// Whether a long command finished in any split since the tab was viewed.
+    private static func finishedUnseen(_ window: NSWindow) -> Bool {
+        guard let terminal = window as? TerminalWindow,
+              let controller = window.windowController as? BaseTerminalController else { return false }
+        return controller.surfaceTree.contains { surface in
+            guard case .finished(let at, _, let duration) = TabCommandTracker.shared.state(of: surface) else {
+                return false
+            }
+            return duration >= 5 && at > terminal.lastViewedAt
+        }
     }
 
     private static func activity(of window: NSWindow) -> Activity {
@@ -272,6 +303,22 @@ final class TabSidebarModel: ObservableObject {
 
     func setColor(_ color: TerminalTabColor, for id: Tab.ID) {
         (window(for: id) as? TerminalWindow)?.tabColor = color
+    }
+
+    // MARK: Attention
+
+    /// Select the next tab needing attention after the selected one, in any
+    /// workspace. Returns false if there is none.
+    @discardableResult
+    func gotoNextAttentionTab() -> Bool {
+        reload()
+        let selectedIndex = tabs.firstIndex(where: \.isSelected) ?? -1
+        let ordered = tabs[(selectedIndex + 1)...] + tabs[..<max(selectedIndex + 1, 0)]
+        guard let tab = ordered.first(where: \.needsAttention) else { return false }
+
+        if !tab.isPinned { TabWorkspaceStore.shared.activate(tab.workspaceID) }
+        select(tab.id)
+        return true
     }
 
     // MARK: Workspaces
@@ -567,6 +614,27 @@ struct TabSidebarView: View {
                         Divider().opacity(0.5)
                     }
 
+                    if !model.hiddenAttentionTabs.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "bell.badge")
+                                Text("Needs Attention")
+                                Spacer()
+                                Text("⌘J")
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+
+                            ForEach(model.hiddenAttentionTabs) { tab in
+                                TabSidebarRow(tab: tab, model: model, showsWorkspace: true)
+                            }
+                        }
+
+                        Divider().opacity(0.5)
+                    }
+
                     HStack(spacing: 6) {
                         TabIcon(icon: store.active.icon)
                         Text(store.active.name)
@@ -652,6 +720,14 @@ private struct TabWorkspaceBar: View {
                                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                                         .fill(Color.primary.opacity(isActive ? 0.16 : 0)))
                                 .opacity(isActive || model.tabCount(in: workspace.id) > 0 ? 1 : 0.5)
+                                .overlay(alignment: .topTrailing) {
+                                    if model.needsAttention(in: workspace.id) {
+                                        Circle()
+                                            .fill(Color.red)
+                                            .frame(width: 6, height: 6)
+                                            .offset(x: -2, y: 2)
+                                    }
+                                }
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -771,7 +847,7 @@ private struct TabSidebarTile: View {
                     .font(.system(size: 14, weight: .medium))
                     .frame(maxWidth: .infinity)
 
-                if tab.hasBell && !tab.isSelected {
+                if tab.needsAttention {
                     Circle()
                         .fill(Color.red)
                         .frame(width: 6, height: 6)
@@ -951,18 +1027,26 @@ private struct FloatingSidebarBackground: ViewModifier {
 private struct TabSidebarRow: View {
     let tab: TabSidebarModel.Tab
     @ObservedObject var model: TabSidebarModel
+    var showsWorkspace = false
     @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 6) {
-            if tab.hasBell && !tab.isSelected {
+            if tab.needsAttention {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 6, height: 6)
-                    .help("This tab rang the bell")
+                    .help("Needs attention")
             }
 
             TabActivityIndicator(activity: tab.activity)
+
+            if showsWorkspace,
+               let workspace = TabWorkspaceStore.shared.workspaces.first(where: { $0.id == tab.workspaceID }) {
+                TabIcon(icon: workspace.icon)
+                    .font(.system(size: 11))
+                    .help(workspace.name)
+            }
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(tab.title)

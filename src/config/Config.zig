@@ -7199,7 +7199,7 @@ pub const Keybinds = struct {
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'j' }, .mods = .{ .super = true } },
-                .{ .scroll_to_selection = {} },
+                .goto_attention_tab,
                 .{ .performable = true },
             );
 

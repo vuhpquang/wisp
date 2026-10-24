@@ -611,6 +611,13 @@ pub const Action = union(enum) {
     /// Only supported on macOS with `macos-vertical-tabs = true`.
     goto_workspace: usize,
 
+    /// Go to the next tab that needs attention in the vertical tab sidebar:
+    /// one that rang the bell, reported an error or finished a long command
+    /// since it was last viewed. Switches workspace if needed.
+    ///
+    /// Only supported on macOS with `macos-vertical-tabs = true`.
+    goto_attention_tab,
+
     /// Change the title of the current focused surface via a pop-up prompt.
     prompt_surface_title,
 
@@ -1467,6 +1474,7 @@ pub const Action = union(enum) {
             .toggle_tab_overview,
             .toggle_tab_sidebar,
             .goto_workspace,
+            .goto_attention_tab,
             .new_split,
             .goto_split,
             .goto_window,
