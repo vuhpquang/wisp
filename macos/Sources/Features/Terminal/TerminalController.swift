@@ -1124,6 +1124,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let container: TerminalViewContainer
         if (window as? TerminalWindow)?.usesVerticalTabs == true {
             let sidebarModel = TabSidebarModel(window: window)
+            (window as? TerminalWindow)?.tabSidebarModel = sidebarModel
             let backgroundColor = config.backgroundColor
             container = TerminalViewContainer {
                 TabSidebarContainer(model: sidebarModel, backgroundColor: backgroundColor) {

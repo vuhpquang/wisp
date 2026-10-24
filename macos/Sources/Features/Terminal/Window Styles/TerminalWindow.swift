@@ -89,6 +89,9 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// The sidebar model of this window when it uses vertical tabs.
+    var tabSidebarModel: TabSidebarModel?
+
     /// Whether this window shows its tabs in the vertical sidebar instead of the
     /// native tab bar. Titlebar tabs keep the native tabs since they live in
     /// the titlebar itself.

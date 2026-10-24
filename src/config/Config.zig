@@ -7353,6 +7353,23 @@ pub const Keybinds = struct {
                 .toggle_tab_sidebar,
                 .{ .performable = true },
             );
+
+            // Workspaces in the vertical tab sidebar. Physical keys since
+            // shift turns the digits into symbols.
+            inline for (1..10) |i| {
+                try self.set.putFlags(
+                    alloc,
+                    .{
+                        .key = .{ .physical = @field(
+                            inputpkg.Key,
+                            std.fmt.comptimePrint("digit_{d}", .{i}),
+                        ) },
+                        .mods = .{ .super = true, .shift = true },
+                    },
+                    .{ .goto_workspace = i },
+                    .{ .performable = true },
+                );
+            }
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'f' }, .mods = .{ .super = true, .shift = true } },

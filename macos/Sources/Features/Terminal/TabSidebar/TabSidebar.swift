@@ -90,6 +90,11 @@ final class TabSidebarState: ObservableObject {
     }
 }
 
+extension Notification.Name {
+    /// A surface's progress report (OSC 9;4) was set or cleared.
+    static let ghosttySurfaceProgressDidChange = Notification.Name("com.mitchellh.ghostty.surfaceProgressDidChange")
+}
+
 /// The tabs of a single tab group, as shown by the sidebar of one window.
 final class TabSidebarModel: ObservableObject {
     struct Tab: Identifiable, Equatable {
@@ -101,6 +106,16 @@ final class TabSidebarModel: ObservableObject {
         let hasBell: Bool
         let isPinned: Bool
         let workspaceID: UUID
+        let activity: Activity
+    }
+
+    /// What the programs in a tab report through progress reports (OSC 9;4).
+    /// Agents such as Claude Code report progress while they work.
+    enum Activity: Equatable {
+        case idle
+        case busy
+        case progress(Double)
+        case error
     }
 
     @Published private(set) var tabs: [Tab] = []
@@ -133,6 +148,7 @@ final class TabSidebarModel: ObservableObject {
             NSWindow.didBecomeMainNotification,
             NSWindow.willCloseNotification,
             .terminalWindowBellDidChangeNotification,
+            .ghosttySurfaceProgressDidChange,
         ]
         for name in names {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -187,12 +203,24 @@ final class TabSidebarModel: ObservableObject {
                 keyEquivalent: terminal?.keyEquivalent ?? "",
                 hasBell: (w.windowController as? BaseTerminalController)?.bell ?? false,
                 isPinned: terminal?.isTabPinned ?? false,
-                workspaceID: TabWorkspaceStore.shared.workspaceID(of: w))
+                workspaceID: TabWorkspaceStore.shared.workspaceID(of: w),
+                activity: Self.activity(of: w))
         }
 
         // Always publish: the active workspace may have changed even when the
         // tabs did not.
         tabs = newTabs
+    }
+
+    private static func activity(of window: NSWindow) -> Activity {
+        guard let controller = window.windowController as? BaseTerminalController else { return .idle }
+        let reports = controller.surfaceTree.compactMap(\.progressReport)
+        if reports.contains(where: { $0.state == .error }) { return .error }
+        if let report = reports.first(where: { $0.state == .set }), let value = report.progress {
+            return .progress(Double(value) / 100)
+        }
+        if reports.contains(where: { $0.state != .remove }) { return .busy }
+        return .idle
     }
 
     private var tabWindows: [NSWindow] {
@@ -265,7 +293,7 @@ final class TabSidebarModel: ObservableObject {
     }
 
     func promptNewWorkspace() {
-        promptWorkspace(title: "New Workspace", name: "", icon: "📁") { [weak self] name, icon in
+        promptWorkspace(title: "New Workspace", name: "", icon: "") { [weak self] name, icon in
             let workspace = TabWorkspaceStore.shared.create(name: name, icon: icon)
             self?.switchWorkspace(workspace.id)
         }
@@ -298,30 +326,22 @@ final class TabSidebarModel: ObservableObject {
     ) {
         guard let window else { return }
 
-        let iconField = NSTextField(frame: NSRect(x: 0, y: 0, width: 44, height: 24))
-        iconField.stringValue = icon
-        iconField.alignment = .center
-        let nameField = NSTextField(frame: NSRect(x: 52, y: 0, width: 198, height: 24))
-        nameField.stringValue = name
-        nameField.placeholderString = "Name"
-        let fields = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-        fields.addSubview(iconField)
-        fields.addSubview(nameField)
+        let editor = TabWorkspaceEditor(name: name, icon: icon)
+        let accessory = NSHostingView(rootView: TabWorkspaceEditorView(editor: editor))
+        accessory.frame = NSRect(x: 0, y: 0, width: 260, height: 28)
 
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "Pick an emoji icon and a name."
-        alert.accessoryView = fields
+        alert.informativeText = "Pick an icon and a name. Without an icon the first letter of the name is used."
+        alert.accessoryView = accessory
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = nameField
 
         alert.beginSheetModal(for: window) { response in
             guard response == .alertFirstButtonReturn else { return }
-            let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+            let name = editor.name.trimmingCharacters(in: .whitespaces)
             guard !name.isEmpty else { return }
-            let icon = iconField.stringValue.trimmingCharacters(in: .whitespaces)
-            completion(name, icon.isEmpty ? String(name.prefix(1)) : String(icon.prefix(2)))
+            completion(name, editor.icon.isEmpty ? String(name.prefix(1)).uppercased() : editor.icon)
         }
     }
 
@@ -608,7 +628,7 @@ private struct TabWorkspaceBar: View {
         HStack(spacing: 2) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 2) {
-                    ForEach(store.workspaces) { workspace in
+                    ForEach(Array(store.workspaces.enumerated()), id: \.element.id) { index, workspace in
                         let isActive = workspace.id == store.activeID
                         Button {
                             model.switchWorkspace(workspace.id)
@@ -623,7 +643,7 @@ private struct TabWorkspaceBar: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help(workspace.name)
+                        .help(index < 9 ? "\(workspace.name) (⇧⌘\(index + 1))" : workspace.name)
                         .contextMenu { TabWorkspaceMenu(workspace: workspace, model: model) }
                     }
                 }
@@ -661,6 +681,103 @@ private struct TabWorkspaceBar: View {
     }
 }
 
+/// The values edited by the workspace alert.
+final class TabWorkspaceEditor: ObservableObject {
+    @Published var name: String
+    @Published var icon: String
+
+    init(name: String, icon: String) {
+        self.name = name
+        self.icon = icon
+    }
+}
+
+/// Icon picker and name field shown in the workspace alert.
+private struct TabWorkspaceEditorView: View {
+    @ObservedObject var editor: TabWorkspaceEditor
+    @State private var isPickingIcon = false
+    @FocusState private var nameFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                isPickingIcon.toggle()
+            } label: {
+                Group {
+                    if editor.icon.isEmpty {
+                        Image(systemName: "face.smiling")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(editor.icon)
+                    }
+                }
+                .font(.system(size: 16))
+                .frame(width: 36, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.08)))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Choose Icon")
+            .popover(isPresented: $isPickingIcon, arrowEdge: .bottom) {
+                TabEmojiPicker(selection: $editor.icon) { isPickingIcon = false }
+            }
+
+            TextField("Name", text: $editor.name)
+                .textFieldStyle(.roundedBorder)
+                .focused($nameFocused)
+        }
+        .onAppear { nameFocused = true }
+    }
+}
+
+/// A small grid of emoji for workspace icons, plus "None".
+private struct TabEmojiPicker: View {
+    @Binding var selection: String
+    let onPick: () -> Void
+
+    private static let emoji: [String] = [
+        "🏠", "💼", "🧪", "🚀", "🛠️", "🐛", "📦", "🔥",
+        "⚡️", "🌱", "🎯", "📚", "🧠", "🤖", "🎨", "🎮",
+        "🍎", "🐧", "🐳", "☁️", "🔒", "📱", "💻", "🖥️",
+        "📈", "💰", "🗂️", "📝", "🎵", "☕️", "🌙", "⭐️",
+        "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫️", "⚪️",
+    ]
+
+    private static let columns = Array(repeating: GridItem(.fixed(30), spacing: 2), count: 8)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LazyVGrid(columns: Self.columns, spacing: 2) {
+                ForEach(Self.emoji, id: \.self) { emoji in
+                    Button {
+                        selection = emoji
+                        onPick()
+                    } label: {
+                        Text(emoji)
+                            .font(.system(size: 18))
+                            .frame(width: 30, height: 30)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(selection == emoji ? Color.accentColor.opacity(0.3) : .clear))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Button("No Icon") {
+                selection = ""
+                onPick()
+            }
+            .buttonStyle(.link)
+            .font(.system(size: 11))
+        }
+        .padding(10)
+    }
+}
+
 /// Context menu for a workspace.
 private struct TabWorkspaceMenu: View {
     let workspace: TabWorkspace
@@ -690,6 +807,8 @@ private struct TabSidebarTile: View {
                     Circle()
                         .fill(Color.red)
                         .frame(width: 6, height: 6)
+                } else {
+                    TabActivityIndicator(activity: tab.activity)
                 }
             }
 
@@ -722,6 +841,43 @@ private struct TabSidebarTile: View {
 
         if tab.isSelected { return Color.primary.opacity(0.16) }
         return Color.primary.opacity(isHovering ? 0.1 : 0.06)
+    }
+}
+
+/// Shows that a program in the tab reports progress: a spinner while busy, a
+/// ring for a known percentage, and a warning on error.
+private struct TabActivityIndicator: View {
+    let activity: TabSidebarModel.Activity
+
+    var body: some View {
+        switch activity {
+        case .idle:
+            EmptyView()
+
+        case .busy:
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.7)
+                .frame(width: 12, height: 12)
+                .help("Running")
+
+        case .progress(let value):
+            ZStack {
+                Circle().stroke(Color.primary.opacity(0.2), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: value)
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 10, height: 10)
+            .help("\(Int(value * 100))%")
+
+        case .error:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(.orange)
+                .help("Error")
+        }
     }
 }
 
@@ -796,6 +952,8 @@ private struct TabSidebarRow: View {
                     .frame(width: 6, height: 6)
                     .help("This tab rang the bell")
             }
+
+            TabActivityIndicator(activity: tab.activity)
 
             Text(tab.title)
                 .font(.system(size: 12, weight: tab.isSelected ? .semibold : .regular))

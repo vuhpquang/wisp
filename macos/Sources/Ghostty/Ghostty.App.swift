@@ -695,6 +695,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_TAB_SIDEBAR:
                 return TabSidebarState.shared.togglePinned()
 
+            case GHOSTTY_ACTION_GOTO_WORKSPACE:
+                return gotoWorkspace(app, target: target, index: Int(action.action.goto_workspace.index))
+
             case GHOSTTY_ACTION_CELL_SIZE:
                 setCellSize(app, target: target, v: action.action.cell_size)
 
@@ -1141,6 +1144,22 @@ extension Ghostty {
             default:
                 assertionFailure()
             }
+        }
+
+        private static func gotoWorkspace(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            index: Int) -> Bool {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface),
+                  let window = surfaceView.window as? TerminalWindow,
+                  let model = window.tabSidebarModel else { return false }
+
+            let workspaces = TabWorkspaceStore.shared.workspaces
+            guard index >= 1, index <= workspaces.count else { return false }
+            model.switchWorkspace(workspaces[index - 1].id)
+            return true
         }
 
         private static func toggleCommandPalette(

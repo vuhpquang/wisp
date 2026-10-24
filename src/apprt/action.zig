@@ -367,6 +367,9 @@ pub const Action = union(Key) {
     /// Toggle the vertical tab sidebar between pinned and collapsed.
     toggle_tab_sidebar,
 
+    /// Switch to a workspace in the vertical tab sidebar.
+    goto_workspace: GotoWorkspace,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -440,6 +443,7 @@ pub const Action = union(Key) {
         move_tab_to_new_window,
         resize_window,
         toggle_tab_sidebar,
+        goto_workspace,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -573,6 +577,12 @@ pub const ResizeSplit = extern struct {
 
 pub const MoveTab = extern struct {
     amount: isize,
+};
+
+/// Sync with: ghostty_action_goto_workspace_s
+pub const GotoWorkspace = extern struct {
+    /// 1-indexed workspace number.
+    index: u32,
 };
 
 /// The tab to jump to. This is non-exhaustive so that integer values represent

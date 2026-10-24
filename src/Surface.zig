@@ -5603,6 +5603,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             {},
         ),
 
+        .goto_workspace => |n| return try self.rt_app.performAction(
+            .{ .surface = self },
+            .goto_workspace,
+            .{ .index = std.math.cast(u32, n) orelse return false },
+        ),
+
         .toggle_window_float_on_top => return try self.rt_app.performAction(
             .{ .surface = self },
             .float_window,

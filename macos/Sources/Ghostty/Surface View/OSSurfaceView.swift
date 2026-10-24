@@ -30,7 +30,9 @@ extension Ghostty {
         @Published var hoverUrl: String?
 
         // The progress report (if any)
-        @Published var progressReport: Action.ProgressReport?
+        @Published var progressReport: Action.ProgressReport? {
+            didSet { NotificationCenter.default.post(name: .ghosttySurfaceProgressDidChange, object: self) }
+        }
 
         // The currently active key tables. Empty if no tables are active.
         @Published var keyTables: [String] = []

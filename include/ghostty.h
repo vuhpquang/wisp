@@ -650,6 +650,11 @@ typedef struct {
   ssize_t amount;
 } ghostty_action_move_tab_s;
 
+// apprt.action.GotoWorkspace
+typedef struct {
+  uint32_t index;
+} ghostty_action_goto_workspace_s;
+
 // apprt.action.GotoTab
 typedef enum {
   GHOSTTY_GOTO_TAB_PREVIOUS = -1,
@@ -1017,6 +1022,7 @@ typedef enum {
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
   GHOSTTY_ACTION_RESIZE_WINDOW,
   GHOSTTY_ACTION_TOGGLE_TAB_SIDEBAR,
+  GHOSTTY_ACTION_GOTO_WORKSPACE,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1061,6 +1067,7 @@ typedef union {
   ghostty_action_search_selected_s search_selected;
   ghostty_action_readonly_e readonly;
   ghostty_action_open_config_e open_config;
+  ghostty_action_goto_workspace_s goto_workspace;
 } ghostty_action_u;
 
 typedef struct {

@@ -604,6 +604,13 @@ pub const Action = union(enum) {
     /// Only supported on macOS with `macos-vertical-tabs = true`.
     toggle_tab_sidebar,
 
+    /// Switch to the workspace with the given (1-indexed) number in the
+    /// vertical tab sidebar. Pinned tabs and the active workspace's tabs are
+    /// the only ones shown and reachable by tab navigation.
+    ///
+    /// Only supported on macOS with `macos-vertical-tabs = true`.
+    goto_workspace: usize,
+
     /// Change the title of the current focused surface via a pop-up prompt.
     prompt_surface_title,
 
@@ -1459,6 +1466,7 @@ pub const Action = union(enum) {
             .move_tab_to_new_window,
             .toggle_tab_overview,
             .toggle_tab_sidebar,
+            .goto_workspace,
             .new_split,
             .goto_split,
             .goto_window,
