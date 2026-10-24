@@ -1,0 +1,63 @@
+name: Sync upstream
+
+# Keeps this fork up to date with ghostty-org/ghostty. Scheduled workflows only
+# run from the default branch, so `main` is upstream plus this workflow:
+# upstream is merged into `main`, then `main` into the feature branch. If a
+# merge conflicts the run fails (GitHub emails you) and that branch isn't
+# pushed; resolve it locally with `git merge upstream/main` or `git merge main`.
+#
+# Merges that touch .github/workflows can only be pushed with a token that has
+# the `workflow` scope. Add one as the SYNC_TOKEN repository secret; without it
+# the default token is used and such pushes are rejected.
+
+on:
+  schedule:
+    - cron: "0 2 * * 1" # Mondays 02:00 UTC (09:00 in Vietnam)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository != 'ghostty-org/ghostty'
+    runs-on: ubuntu-latest
+    env:
+      FEATURE_BRANCH: feat/vertical-tabs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/ghostty-org/ghostty.git
+          git fetch upstream main
+          git fetch origin "$FEATURE_BRANCH"
+
+      - name: Merge upstream into main
+        run: |
+          if ! git merge --no-edit upstream/main; then
+            echo "::error::Merging upstream/main into main conflicts in:"
+            git diff --name-only --diff-filter=U | sed 's/^/::error::  /'
+            exit 1
+          fi
+          git push origin main
+
+      - name: Merge main into the feature branch
+        run: |
+          git checkout -B "$FEATURE_BRANCH" "origin/$FEATURE_BRANCH"
+          if ! git merge --no-edit main; then
+            echo "::error::Merging main into $FEATURE_BRANCH conflicts in:"
+            git diff --name-only --diff-filter=U | sed 's/^/::error::  /'
+            exit 1
+          fi
+          git push origin "$FEATURE_BRANCH"
