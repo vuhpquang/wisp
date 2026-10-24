@@ -281,6 +281,22 @@ final class TabSidebarModel: ObservableObject {
         guard let target = window(for: id) else { return }
         target.tabGroup?.selectedWindow = target
         target.makeKeyAndOrderFront(nil)
+
+        // Give the terminal focus back, e.g. after typing in the search field.
+        if let surface = (target.windowController as? BaseTerminalController)?.focusedSurface {
+            target.makeFirstResponder(surface)
+        }
+    }
+
+    /// Tabs in any workspace whose title, folder or branch contains the query.
+    func search(_ query: String) -> [Tab] {
+        let words = query.lowercased().split(separator: " ")
+        return tabs.filter { tab in
+            let haystack = [tab.title, tab.directory ?? "", tab.branch ?? ""]
+                .joined(separator: " ")
+                .lowercased()
+            return words.allSatisfy { haystack.contains($0) }
+        }
     }
 
     func close(_ id: Tab.ID) {
@@ -599,9 +615,32 @@ struct TabSidebarView: View {
     @ObservedObject var model: TabSidebarModel
     @ObservedObject private var store = TabWorkspaceStore.shared
     @State private var draggingID: TabSidebarModel.Tab.ID?
+    @State private var query = ""
 
     var body: some View {
         VStack(spacing: 0) {
+            TabSidebarSearchField(query: $query) {
+                if let first = model.search(query).first {
+                    model.select(first.id)
+                    query = ""
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+
+            if !query.isEmpty {
+                searchResults
+            } else {
+                tabList
+            }
+
+            Divider().opacity(0.5)
+
+            footer
+        }
+    }
+
+    private var tabList: some View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 8) {
                     if !model.pinnedTabs.isEmpty {
@@ -657,9 +696,31 @@ struct TabSidebarView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
+    }
 
-            Divider().opacity(0.5)
+    private var searchResults: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            let results = model.search(query)
+            LazyVStack(spacing: 2) {
+                if results.isEmpty {
+                    Text("No matching tabs")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 12)
+                }
 
+                ForEach(results) { tab in
+                    TabSidebarRow(tab: tab, model: model, showsWorkspace: true)
+                        .simultaneousGesture(TapGesture().onEnded { query = "" })
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private var footer: some View {
+        VStack(spacing: 0) {
             Button(action: model.newTab) {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
@@ -696,6 +757,39 @@ struct TabSidebarView: View {
                 target: id,
                 model: model,
                 draggingID: $draggingID))
+    }
+}
+
+/// Search field at the top of the sidebar. Return selects the first match and
+/// Escape clears the search.
+private struct TabSidebarSearchField: View {
+    @Binding var query: String
+    let onSubmit: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.tertiary)
+            TextField("Search tabs", text: $query)
+                .textFieldStyle(.plain)
+                .onSubmit(onSubmit)
+                .onExitCommand { query = "" }
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.07)))
     }
 }
 
