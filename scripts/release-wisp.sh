@@ -62,4 +62,6 @@ git tag -a "$tag" -m "Wisp $version"
 git push origin "$tag"
 
 echo "==> Creating the GitHub release"
-gh release create "$tag" "$zip" --title "Wisp $version" --notes-file "$out/notes.md"
+# Name the repo explicitly: gh would otherwise pick the upstream remote.
+repo="$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
+gh release create "$tag" "$zip" --repo "$repo" --title "Wisp $version" --notes-file "$out/notes.md"
