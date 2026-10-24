@@ -19,6 +19,19 @@ final class WispSettings: ObservableObject {
     /// The values in the settings file, by option name.
     @Published private(set) var values: [String: String] = [:]
 
+    /// A `keybind` line written by Settings. `owner` is the action whose
+    /// shortcut was changed, so its lines can be reset together: the new
+    /// binding and an `unbind` of the shortcut it replaced.
+    struct Keybind: Equatable {
+        var owner: String
+        var trigger: String
+        var action: String
+    }
+
+    @Published private(set) var keybinds: [Keybind] = []
+
+    private static let ownerPrefix = "# wisp-keybind-owner: "
+
     /// The values in the user's config file, shown as the current value of
     /// options not changed here.
     private(set) var configValues: [String: String] = [:]
@@ -29,7 +42,9 @@ final class WispSettings: ObservableObject {
 
     /// Re-read both files, e.g. when the Settings window opens.
     func reload() {
-        values = Self.parse(try? String(contentsOf: Self.fileURL, encoding: .utf8))
+        let text = try? String(contentsOf: Self.fileURL, encoding: .utf8)
+        values = Self.parse(text)
+        keybinds = Self.parseKeybinds(text)
         let configPath = Ghostty.AllocatedString(ghostty_config_open_path()).string
         configValues = Self.parse(try? String(contentsOfFile: configPath, encoding: .utf8))
     }
@@ -50,6 +65,44 @@ final class WispSettings: ObservableObject {
     /// Saving waits a moment so dragging a slider reloads the config once.
     func set(_ key: String, _ value: String?) {
         values[key] = value
+        scheduleSave()
+    }
+
+    // MARK: Keybinds
+
+    /// The shortcut set here for an action, if any.
+    func trigger(for action: String) -> String? {
+        keybinds.first { $0.owner == action && $0.action != "unbind" }?.trigger
+    }
+
+    /// Bind an action to a new trigger, or unbind it with nil. `current` is the
+    /// trigger it has now, which is unbound so the action has one shortcut.
+    func setShortcut(for action: String, to trigger: String?, replacing current: String?) {
+        // Keep unbinding the shortcut from the config, not one set here earlier.
+        let original = keybinds.first { $0.owner == action && $0.action == "unbind" }?.trigger
+            ?? (self.trigger(for: action) == nil ? current : nil)
+
+        keybinds.removeAll { $0.owner == action }
+        if let original, original != trigger {
+            keybinds.append(Keybind(owner: action, trigger: original, action: "unbind"))
+        }
+        if let trigger {
+            keybinds.append(Keybind(owner: action, trigger: trigger, action: action))
+        }
+        scheduleSave()
+    }
+
+    /// Forget shortcut changes for an action so the config's shortcut applies.
+    func resetShortcut(for action: String) {
+        keybinds.removeAll { $0.owner == action }
+        scheduleSave()
+    }
+
+    func hasShortcutOverride(for action: String) -> Bool {
+        keybinds.contains { $0.owner == action }
+    }
+
+    private func scheduleSave() {
         pendingSave?.cancel()
         let save = DispatchWorkItem { [weak self] in self?.save() }
         pendingSave = save
@@ -66,6 +119,11 @@ final class WispSettings: ObservableObject {
             if Self.repeatable.contains(key) { lines.append("\(key) = \"\"") }
             lines.append("\(key) = \(values[key]!)")
         }
+        if !keybinds.isEmpty { lines.append("") }
+        for keybind in keybinds {
+            lines.append(Self.ownerPrefix + keybind.owner)
+            lines.append("keybind = \(keybind.trigger)=\(keybind.action)")
+        }
 
         do {
             try FileManager.default.createDirectory(
@@ -81,6 +139,28 @@ final class WispSettings: ObservableObject {
         (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
     }
 
+    /// Parse the keybind lines written by `save`, with their owner comments.
+    private static func parseKeybinds(_ text: String?) -> [Keybind] {
+        guard let text else { return [] }
+        var result: [Keybind] = []
+        var owner: String?
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix(ownerPrefix) {
+                owner = String(trimmed.dropFirst(ownerPrefix.count))
+                continue
+            }
+            guard let owner, trimmed.hasPrefix("keybind"), let eq = trimmed.firstIndex(of: "=") else { continue }
+            let binding = trimmed[trimmed.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            guard let split = binding.firstIndex(of: "=") else { continue }
+            result.append(Keybind(
+                owner: owner,
+                trigger: String(binding[..<split]),
+                action: String(binding[binding.index(after: split)...])))
+        }
+        return result
+    }
+
     /// Parse `key = value` lines. The last value wins; quotes are removed.
     private static func parse(_ text: String?) -> [String: String] {
         guard let text else { return [:] }
@@ -93,7 +173,7 @@ final class WispSettings: ObservableObject {
             if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
                 value = String(value.dropFirst().dropLast())
             }
-            guard !key.isEmpty, !value.isEmpty else { continue }
+            guard !key.isEmpty, !value.isEmpty, key != "keybind" else { continue }
             result[key] = value
         }
         return result
@@ -107,7 +187,7 @@ final class WispSettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 580),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false)
@@ -144,6 +224,11 @@ struct WispSettingsView: View {
                 window.tabItem { Label("Window", systemImage: "macwindow") }
                 terminal.tabItem { Label("Terminal", systemImage: "terminal") }
                 tabs.tabItem { Label("Tabs", systemImage: "sidebar.left") }
+                WispKeybindingsView()
+                    .padding(8)
+                    .tabItem { Label("Keyboard", systemImage: "keyboard") }
+                WispQuickTerminalSettings()
+                    .tabItem { Label("Quick Terminal", systemImage: "rectangle.topthird.inset.filled") }
             }
             .padding(12)
 
@@ -174,7 +259,7 @@ struct WispSettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
-        .frame(width: 600, height: 560)
+        .frame(width: 680, height: 580)
     }
 
     // MARK: Tabs
