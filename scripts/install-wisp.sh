@@ -38,11 +38,21 @@ if $pull; then
   git pull --ff-only origin main
 fi
 
-echo "==> Building libghostty (ReleaseFast)"
-zig build -Doptimize=ReleaseFast -Demit-macos-app=false
+# libghostty embeds its version, which by default includes the current commit,
+# so every commit would rebuild it from scratch (minutes, with optimizations).
+# Use the last commit that touched the Zig/C sources instead: commits that only
+# change the macOS app reuse the cached library.
+base_version="$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon | head -1)"
+lib_commit="$(git log -1 --format=%h -- src include pkg vendor build.zig build.zig.zon)"
+lib_version="${base_version}+${lib_commit}"
+
+echo "==> Building libghostty $lib_version (ReleaseFast, this Mac's architecture)"
+zig build -Doptimize=ReleaseFast -Demit-macos-app=false \
+  -Dxcframework-target=native -Dversion-string="$lib_version"
 
 echo "==> Building the macOS app (ReleaseLocal)"
-(cd macos && xcodebuild -target Ghostty -configuration ReleaseLocal build -quiet)
+# Match the single-architecture library built above.
+(cd macos && xcodebuild -target Ghostty -configuration ReleaseLocal -arch "$(uname -m)" build -quiet)
 
 if $quit && [ "$(osascript -e 'application id "com.vuhpquang.wisp" is running' 2>/dev/null)" = "true" ]; then
   echo "==> Quitting the running Wisp"
