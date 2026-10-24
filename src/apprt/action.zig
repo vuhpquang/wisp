@@ -370,6 +370,10 @@ pub const Action = union(Key) {
     /// Switch to a workspace in the vertical tab sidebar.
     goto_workspace: GotoWorkspace,
 
+    /// A command started running in the surface (shell integration). Paired
+    /// with `command_finished`.
+    command_started,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -444,6 +448,7 @@ pub const Action = union(Key) {
         resize_window,
         toggle_tab_sidebar,
         goto_workspace,
+        command_started,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

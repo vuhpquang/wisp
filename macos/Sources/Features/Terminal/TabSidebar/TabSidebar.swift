@@ -107,6 +107,11 @@ final class TabSidebarModel: ObservableObject {
         let isPinned: Bool
         let workspaceID: UUID
         let activity: Activity
+
+        /// The working directory of the focused split, abbreviated with `~`.
+        let directory: String?
+        let branch: String?
+        let command: TabCommandState?
     }
 
     /// What the programs in a tab report through progress reports (OSC 9;4).
@@ -149,6 +154,8 @@ final class TabSidebarModel: ObservableObject {
             NSWindow.willCloseNotification,
             .terminalWindowBellDidChangeNotification,
             .ghosttySurfaceProgressDidChange,
+            .ghosttySurfacePwdDidChange,
+            .tabCommandStateDidChange,
         ]
         for name in names {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -195,6 +202,8 @@ final class TabSidebarModel: ObservableObject {
         let selected = window?.tabGroup?.selectedWindow ?? window
         let newTabs = windows.map { w in
             let terminal = w as? TerminalWindow
+            let surface = (w.windowController as? BaseTerminalController)?.focusedSurface
+            let pwd = surface?.pwd.flatMap { $0.isEmpty ? nil : $0 }
             return Tab(
                 id: ObjectIdentifier(w),
                 title: w.title.isEmpty ? "👻" : w.title,
@@ -204,7 +213,10 @@ final class TabSidebarModel: ObservableObject {
                 hasBell: (w.windowController as? BaseTerminalController)?.bell ?? false,
                 isPinned: terminal?.isTabPinned ?? false,
                 workspaceID: TabWorkspaceStore.shared.workspaceID(of: w),
-                activity: Self.activity(of: w))
+                activity: Self.activity(of: w),
+                directory: pwd.map { ($0 as NSString).abbreviatingWithTildeInPath },
+                branch: pwd.flatMap(TabGitInfo.branch(at:)),
+                command: surface.flatMap(TabCommandTracker.shared.state(of:)))
         }
 
         // Always publish: the active workspace may have changed even when the
@@ -837,6 +849,47 @@ private struct TabActivityIndicator: View {
     }
 }
 
+/// How long the current command has run, or when the last one finished. Short
+/// commands are not shown so the sidebar isn't busy with every `ls`.
+private struct TabCommandBadge: View {
+    let state: TabCommandState
+
+    private static let minimumRunning: TimeInterval = 2
+    private static let minimumFinished: TimeInterval = 5
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            switch state {
+            case .running(let since):
+                let elapsed = context.date.timeIntervalSince(since)
+                if elapsed >= Self.minimumRunning {
+                    HStack(spacing: 2) {
+                        Image(systemName: "timer")
+                        Text(elapsed.compactDuration)
+                            .monospacedDigit()
+                    }
+                    .help("Running for \(elapsed.compactDuration)")
+                }
+
+            case .finished(let at, let exitCode, let duration):
+                if duration >= Self.minimumFinished {
+                    let ago = context.date.timeIntervalSince(at)
+                    let failed = (exitCode ?? 0) != 0
+                    HStack(spacing: 2) {
+                        Image(systemName: failed ? "xmark" : "checkmark")
+                            .foregroundStyle(failed ? Color.red : Color.green)
+                        Text(ago < 60 ? "now" : ago.compactDuration)
+                            .monospacedDigit()
+                    }
+                    .help(failed
+                        ? "Failed with exit code \(exitCode ?? 0) after \(duration.compactDuration)"
+                        : "Finished \(ago.compactDuration) ago after \(duration.compactDuration)")
+                }
+            }
+        }
+    }
+}
+
 /// The context menu shared by sidebar rows and pinned tiles.
 private struct TabSidebarContextMenu: View {
     let tab: TabSidebarModel.Tab
@@ -911,11 +964,29 @@ private struct TabSidebarRow: View {
 
             TabActivityIndicator(activity: tab.activity)
 
-            Text(tab.title)
-                .font(.system(size: 12, weight: tab.isSelected ? .semibold : .regular))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(tab.isSelected ? .primary : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(tab.title)
+                    .font(.system(size: 12, weight: tab.isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(tab.isSelected ? .primary : .secondary)
+
+                if subtitle != nil || tab.command != nil {
+                    HStack(spacing: 4) {
+                        if let subtitle {
+                            Text(subtitle)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
+                        Spacer(minLength: 0)
+                        if let command = tab.command {
+                            TabCommandBadge(state: command)
+                        }
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                }
+            }
 
             Spacer(minLength: 4)
 
@@ -938,7 +1009,7 @@ private struct TabSidebarRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: 30)
+        .frame(height: subtitle != nil || tab.command != nil ? 40 : 30)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(background))
@@ -949,6 +1020,14 @@ private struct TabSidebarRow: View {
         .onHover { isHovering = $0 }
         .onTapGesture { model.select(tab.id) }
         .contextMenu { TabSidebarContextMenu(tab: tab, model: model) }
+    }
+
+    /// The folder and git branch, e.g. `ghostty · main`.
+    private var subtitle: String? {
+        guard let directory = tab.directory else { return nil }
+        let folder = directory == "~" ? "~" : (directory as NSString).lastPathComponent
+        if let branch = tab.branch { return "\(folder) · \(branch)" }
+        return directory
     }
 
     /// Colored tabs are filled with their color, stronger when selected.

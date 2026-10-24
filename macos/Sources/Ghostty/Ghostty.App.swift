@@ -695,6 +695,13 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_TAB_SIDEBAR:
                 return TabSidebarState.shared.togglePinned()
 
+            case GHOSTTY_ACTION_COMMAND_STARTED:
+                if target.tag == GHOSTTY_TARGET_SURFACE,
+                   let surface = target.target.surface,
+                   let surfaceView = self.surfaceView(from: surface) {
+                    DispatchQueue.main.async { TabCommandTracker.shared.started(surfaceView) }
+                }
+
             case GHOSTTY_ACTION_GOTO_WORKSPACE:
                 return gotoWorkspace(app, target: target, index: Int(action.action.goto_workspace.index))
 
@@ -1674,6 +1681,12 @@ extension Ghostty {
             case GHOSTTY_TARGET_SURFACE:
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
+
+                let exitCode = v.exit_code < 0 ? nil : Int(v.exit_code)
+                let seconds = Double(v.duration) / 1_000_000_000
+                DispatchQueue.main.async {
+                    TabCommandTracker.shared.finished(surfaceView, exitCode: exitCode, duration: seconds)
+                }
 
                 // Determine if we even care about command finish notifications
                 guard let config = (NSApplication.shared.delegate as? AppDelegate)?.ghostty.config else { return }
