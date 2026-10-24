@@ -692,6 +692,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_RESIZE_WINDOW:
                 return resizeWindow(app, target: target, v: action.action.resize_window)
 
+            case GHOSTTY_ACTION_TOGGLE_TAB_SIDEBAR:
+                return TabSidebarState.shared.togglePinned()
+
             case GHOSTTY_ACTION_CELL_SIZE:
                 setCellSize(app, target: target, v: action.action.cell_size)
 

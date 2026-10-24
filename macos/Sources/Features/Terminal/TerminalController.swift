@@ -613,6 +613,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 }
             }
         }
+
+        NotificationCenter.default.post(name: TabSidebarState.tabsDidChange, object: window)
     }
 
     private func fixTabBar() {
@@ -1113,8 +1115,19 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         // Initialize our content view to the SwiftUI root
-        let container = TerminalViewContainer {
-            TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+        let container: TerminalViewContainer
+        if (window as? TerminalWindow)?.usesVerticalTabs == true {
+            let sidebarModel = TabSidebarModel(window: window)
+            let backgroundColor = config.backgroundColor
+            container = TerminalViewContainer {
+                TabSidebarContainer(model: sidebarModel, backgroundColor: backgroundColor) {
+                    TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+                }
+            }
+        } else {
+            container = TerminalViewContainer {
+                TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            }
         }
 
         // Set the initial content size on the container so that

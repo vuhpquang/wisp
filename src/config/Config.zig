@@ -3414,6 +3414,18 @@ keybind: Keybinds = .{},
 /// Available since: 1.2.0
 @"macos-window-buttons": MacWindowButtons = .visible,
 
+/// Show tabs in a vertical sidebar on the left of the window instead of
+/// the native horizontal tab bar.
+///
+/// The sidebar can be collapsed with the `toggle_tab_sidebar` action
+/// (bound to `cmd+e` by default). While collapsed, moving the mouse to the
+/// left edge of the window reveals the sidebar temporarily.
+///
+/// This has no effect when `macos-titlebar-style = tabs`.
+///
+/// Changing this option at runtime only applies to new windows.
+@"macos-vertical-tabs": bool = true,
+
 /// The style of the macOS titlebar. Available values are: "native",
 /// "transparent", "tabs", and "hidden".
 ///
@@ -7331,8 +7343,14 @@ pub const Keybinds = struct {
             );
             try self.set.putFlags(
                 alloc,
-                .{ .key = .{ .unicode = 'e' }, .mods = .{ .super = true } },
+                .{ .key = .{ .unicode = 'e' }, .mods = .{ .super = true, .shift = true } },
                 .search_selection,
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = 'e' }, .mods = .{ .super = true } },
+                .toggle_tab_sidebar,
                 .{ .performable = true },
             );
             try self.set.putFlags(

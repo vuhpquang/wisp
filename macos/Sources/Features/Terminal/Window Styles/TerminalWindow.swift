@@ -65,9 +65,16 @@ class TerminalWindow: NSWindow {
         didSet {
             guard tabColor != oldValue else { return }
             tabColorIndicator.rootView = TabColorIndicatorView(tabColor: tabColor)
+            updateTabBackgroundTint()
             invalidateRestorableState()
+            NotificationCenter.default.post(name: TabSidebarState.tabsDidChange, object: self)
         }
     }
+
+    /// Whether this window shows its tabs in the vertical sidebar instead of the
+    /// native tab bar. Titlebar tabs keep the native tabs since they live in
+    /// the titlebar itself.
+    private(set) var usesVerticalTabs = false
 
     // MARK: NSWindow Overrides
 
@@ -109,6 +116,7 @@ class TerminalWindow: NSWindow {
 
         // Setup our initial config
         derivedConfig = .init(config)
+        usesVerticalTabs = config.macosVerticalTabs && derivedConfig.macosTitlebarStyle != .tabs
 
         // If there is a hardcoded title in the configuration, we set that
         // immediately. Future `set_title` apprt actions will override this
@@ -260,6 +268,10 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
+            if usesVerticalTabs {
+                // The vertical sidebar replaces the native tab bar.
+                childViewController.isHidden = true
+            }
             tabBarDidAppear()
         }
     }
@@ -303,6 +315,9 @@ class TerminalWindow: NSWindow {
     }
 
     private func tabBarDidAppear() {
+        // The tab button views are created lazily with the tab bar.
+        DispatchQueue.main.async { [weak self] in self?.updateTabBackgroundTint() }
+
         // Remove our reset zoom accessory. For some reason having a SwiftUI
         // titlebar accessory causes our content view scaling to be wrong.
         // Removing it fixes it, we just need to remember to add it again later.
@@ -320,6 +335,37 @@ class TerminalWindow: NSWindow {
                 addTitlebarAccessoryViewController(resetZoomAccessory)
             }
         }
+    }
+
+    // MARK: Tab Background Tint
+
+    private static let tabBackgroundTintIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.tabBackgroundTint")
+
+    /// Fills this window's native tab button with the tab color instead of only
+    /// showing a dot. There is no API for this so we find the tab button by
+    /// walking up from our accessory view, which AppKit places inside it.
+    private func updateTabBackgroundTint() {
+        var tabButton = tab.accessoryView?.superview
+        while let view = tabButton, !view.className.contains("TabButton") {
+            tabButton = view.superview
+        }
+        guard let tabButton else { return }
+
+        let tint = tabButton.subviews.first { $0.identifier == Self.tabBackgroundTintIdentifier }
+        guard let color = tabColor.displayColor else {
+            tint?.removeFromSuperview()
+            return
+        }
+
+        let view = tint ?? {
+            let view = NSView(frame: tabButton.bounds)
+            view.identifier = Self.tabBackgroundTintIdentifier
+            view.autoresizingMask = [.width, .height]
+            view.wantsLayer = true
+            tabButton.addSubview(view, positioned: .below, relativeTo: nil)
+            return view
+        }()
+        view.layer?.backgroundColor = color.withAlphaComponent(0.35).cgColor
     }
 
     // MARK: Tab Key Equivalents
@@ -394,6 +440,7 @@ class TerminalWindow: NSWindow {
             guard title != oldValue else { return }
 
             syncWindowTitleAppearance()
+            NotificationCenter.default.post(name: TabSidebarState.tabsDidChange, object: self)
         }
     }
 
