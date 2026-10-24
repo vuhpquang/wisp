@@ -79,6 +79,11 @@ extension Ghostty {
 
             ghostty_config_load_recursive_files(cfg)
 
+            // Wisp: options set in the Settings window override the config files.
+            if path == nil, FileManager.default.fileExists(atPath: WispSettings.fileURL.path) {
+                ghostty_config_load_file(cfg, WispSettings.fileURL.path)
+            }
+
             // TODO: we'd probably do some config loading here... for now we'd
             // have to do this synchronously. When we support config updating we can do
             // this async and update later.

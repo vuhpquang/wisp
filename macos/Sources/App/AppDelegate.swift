@@ -998,7 +998,7 @@ class AppDelegate: NSObject,
     // MARK: - IB Actions
 
     @IBAction func openConfig(_ sender: Any?) {
-        ghostty.openConfig()
+        WispSettingsWindowController.shared.show()
     }
 
     @IBAction func reloadConfig(_ sender: Any?) {

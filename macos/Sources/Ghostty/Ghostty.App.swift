@@ -666,7 +666,8 @@ extension Ghostty {
                 pwdChanged(app, target: target, v: action.action.pwd)
 
             case GHOSTTY_ACTION_OPEN_CONFIG:
-                openConfig(app)
+                // Wisp: ⌘, opens the Settings window, which can open the file.
+                DispatchQueue.main.async { WispSettingsWindowController.shared.show() }
 
             case GHOSTTY_ACTION_FLOAT_WINDOW:
                 toggleFloatWindow(app, target: target, mode: action.action.float_window)
