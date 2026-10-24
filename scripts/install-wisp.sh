@@ -71,7 +71,21 @@ plist="$dest/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Wisp" "$plist"
 /usr/libexec/PlistBuddy -c "Add :WispCommit string $(git rev-parse HEAD)" "$plist"
 /usr/libexec/PlistBuddy -c "Add :WispSourcePath string $source_dir" "$plist"
-codesign --force --sign - --options runtime \
+
+# Sign with a fixed certificate when there is one, so macOS keeps Wisp's
+# permissions (like Accessibility) across updates. Ad hoc signatures change
+# with every build. See scripts/setup-wisp-signing.sh.
+identity="-"
+if security find-identity -v -p codesigning | grep -q "Apple Development"; then
+  identity="$(security find-identity -v -p codesigning | sed -n 's/.*\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
+elif security find-identity -p codesigning | grep -q '"Wisp Local Signing"'; then
+  identity="Wisp Local Signing"
+else
+  echo "warning: signing ad hoc; macOS will ask for permissions again after each update." >&2
+  echo "         Run scripts/setup-wisp-signing.sh once to fix that." >&2
+fi
+echo "==> Signing as ${identity/#-/ad hoc}"
+codesign --force --sign "$identity" --options runtime \
   --entitlements macos/GhosttyReleaseLocal.entitlements "$dest"
 
 echo "==> Done. Restart Wisp to use the new version."
