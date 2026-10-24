@@ -556,7 +556,7 @@ struct TabSidebarView: View {
                     }
 
                     HStack(spacing: 6) {
-                        Text(store.active.icon)
+                        TabIcon(icon: store.active.icon)
                         Text(store.active.name)
                             .fontWeight(.medium)
                             .lineLimit(1)
@@ -633,7 +633,7 @@ private struct TabWorkspaceBar: View {
                         Button {
                             model.switchWorkspace(workspace.id)
                         } label: {
-                            Text(workspace.icon)
+                            TabIcon(icon: workspace.icon)
                                 .font(.system(size: 14))
                                 .frame(width: 28, height: 26)
                                 .background(
@@ -659,7 +659,9 @@ private struct TabWorkspaceBar: View {
                     Text("No Saved Layouts")
                 } else {
                     ForEach(layouts) { layout in
-                        Button("Open \(layout.icon ?? "") \(layout.name)") { model.openLayout(layout) }
+                        Button { model.openLayout(layout) } label: {
+                            TabIconLabel(icon: layout.icon ?? "", title: "Open \(layout.name)")
+                        }
                     }
                 }
 
@@ -708,7 +710,7 @@ private struct TabWorkspaceEditorView: View {
                         Image(systemName: "face.smiling")
                             .foregroundStyle(.secondary)
                     } else {
-                        Text(editor.icon)
+                        TabIcon(icon: editor.icon)
                     }
                 }
                 .font(.system(size: 16))
@@ -721,7 +723,7 @@ private struct TabWorkspaceEditorView: View {
             .buttonStyle(.plain)
             .help("Choose Icon")
             .popover(isPresented: $isPickingIcon, arrowEdge: .bottom) {
-                TabEmojiPicker(selection: $editor.icon) { isPickingIcon = false }
+                TabIconPicker(selection: $editor.icon) { isPickingIcon = false }
             }
 
             TextField("Name", text: $editor.name)
@@ -729,52 +731,6 @@ private struct TabWorkspaceEditorView: View {
                 .focused($nameFocused)
         }
         .onAppear { nameFocused = true }
-    }
-}
-
-/// A small grid of emoji for workspace icons, plus "None".
-private struct TabEmojiPicker: View {
-    @Binding var selection: String
-    let onPick: () -> Void
-
-    private static let emoji: [String] = [
-        "🏠", "💼", "🧪", "🚀", "🛠️", "🐛", "📦", "🔥",
-        "⚡️", "🌱", "🎯", "📚", "🧠", "🤖", "🎨", "🎮",
-        "🍎", "🐧", "🐳", "☁️", "🔒", "📱", "💻", "🖥️",
-        "📈", "💰", "🗂️", "📝", "🎵", "☕️", "🌙", "⭐️",
-        "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫️", "⚪️",
-    ]
-
-    private static let columns = Array(repeating: GridItem(.fixed(30), spacing: 2), count: 8)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            LazyVGrid(columns: Self.columns, spacing: 2) {
-                ForEach(Self.emoji, id: \.self) { emoji in
-                    Button {
-                        selection = emoji
-                        onPick()
-                    } label: {
-                        Text(emoji)
-                            .font(.system(size: 18))
-                            .frame(width: 30, height: 30)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(selection == emoji ? Color.accentColor.opacity(0.3) : .clear))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Button("No Icon") {
-                selection = ""
-                onPick()
-            }
-            .buttonStyle(.link)
-            .font(.system(size: 11))
-        }
-        .padding(10)
     }
 }
 
@@ -891,8 +847,8 @@ private struct TabSidebarContextMenu: View {
         Button("Rename Tab…") { model.rename(tab.id) }
         Menu("Move to Workspace") {
             ForEach(TabWorkspaceStore.shared.workspaces) { workspace in
-                Button("\(workspace.icon) \(workspace.name)") {
-                    model.moveTab(tab.id, toWorkspace: workspace.id)
+                Button { model.moveTab(tab.id, toWorkspace: workspace.id) } label: {
+                    TabIconLabel(icon: workspace.icon, title: workspace.name)
                 }
                 .disabled(!tab.isPinned && workspace.id == tab.workspaceID)
             }
