@@ -4,8 +4,9 @@
 #
 # Options:
 #   --pull     fast-forward the checkout from origin/main first
-#   --no-quit  don't quit a running Wisp (used by the in-app updater, which
-#              asks to restart once the new app is installed)
+#   --quit     quit a running Wisp before installing (its terminals close);
+#              by default it keeps running and the new version is used after
+#              the next restart
 #
 # Wisp never auto-updates through Sparkle: it would be replaced by upstream
 # Ghostty. The in-app updater runs this script instead. Your Ghostty config
@@ -13,10 +14,11 @@
 set -euo pipefail
 
 pull=false
-quit=true
+quit=false
 for arg in "$@"; do
   case "$arg" in
     --pull) pull=true ;;
+    --quit) quit=true ;;
     --no-quit) quit=false ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
@@ -62,4 +64,4 @@ plist="$dest/Contents/Info.plist"
 codesign --force --sign - --options runtime \
   --entitlements macos/GhosttyReleaseLocal.entitlements "$dest"
 
-echo "==> Done. Open it with: open -a Wisp"
+echo "==> Done. Restart Wisp to use the new version."
