@@ -1006,7 +1006,7 @@ class AppDelegate: NSObject,
 
     @IBAction func checkForUpdates(_ sender: Any?) {
         // Wisp updates by rebuilding from the fork: scripts/install-wisp.sh.
-        NSWorkspace.shared.open(URL(string: "https://github.com/vuhpquang/ghostty")!)
+        NSWorkspace.shared.open(URL(string: "https://github.com/vuhpquang/wisp")!)
         // UpdateSimulator.happyPath.simulate(with: updateViewModel)
     }
 
