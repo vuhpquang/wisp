@@ -232,6 +232,7 @@ struct WispQuickTerminalSettings: View {
 
     private static let shortcuts: [(trigger: String, label: String)] = [
         ("global:ctrl+grave_accent", "⌃`"),
+        ("global:alt+grave_accent", "⌥`"),
         ("global:alt+space", "⌥Space"),
         ("global:super+grave_accent", "⌘`"),
         ("global:ctrl+alt+space", "⌃⌥Space"),
@@ -262,7 +263,7 @@ struct WispQuickTerminalSettings: View {
             }
 
             QuickTerminalOption(key: "quick-terminal-position", title: "Slides in from", options: ["top", "bottom", "left", "right", "center"])
-            QuickTerminalOption(key: "quick-terminal-size", title: "Size", options: ["30%", "40%", "50%", "60%", "75%", "100%"])
+            QuickTerminalSizePickers()
             QuickTerminalOption(key: "quick-terminal-screen", title: "Screen", options: ["main", "mouse", "macos-menu-bar"])
             QuickTerminalOption(key: "quick-terminal-autohide", title: "Hide when it loses focus", options: ["true", "false"])
 
@@ -271,6 +272,54 @@ struct WispQuickTerminalSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// `quick-terminal-size` as two pickers: the size along the edge it slides in
+/// from (height for top/bottom, width for left/right) and the other side,
+/// which is centered when smaller than the screen.
+private struct QuickTerminalSizePickers: View {
+    @ObservedObject private var settings = WispSettings.shared
+
+    private static let key = "quick-terminal-size"
+    private static let sizes = ["20%", "30%", "40%", "50%", "60%", "75%", "100%"]
+
+    private var parts: [String] {
+        (settings.value(Self.key) ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    private var isVertical: Bool {
+        ["left", "right"].contains(settings.value("quick-terminal-position") ?? "top")
+    }
+
+    var body: some View {
+        Group {
+            Picker(isVertical ? "Width" : "Height", selection: Binding(
+                get: { parts.first ?? "" },
+                set: { save(primary: $0, secondary: parts.count > 1 ? parts[1] : "") }
+            )) {
+                Text("Default").tag("")
+                ForEach(Self.sizes, id: \.self) { Text($0).tag($0) }
+            }
+
+            Picker(isVertical ? "Height (centered)" : "Width (centered)", selection: Binding(
+                get: { parts.count > 1 ? parts[1] : "" },
+                set: { save(primary: parts.first ?? "", secondary: $0) }
+            )) {
+                Text("Full").tag("")
+                ForEach(Self.sizes.dropLast(), id: \.self) { Text($0).tag($0) }
+            }
+        }
+    }
+
+    private func save(primary: String, secondary: String) {
+        switch (primary.isEmpty, secondary.isEmpty) {
+        case (true, true): settings.set(Self.key, nil)
+        case (false, true): settings.set(Self.key, primary)
+        // A second size needs a first one; keep the default-ish 25%.
+        case (true, false): settings.set(Self.key, "25%,\(secondary)")
+        case (false, false): settings.set(Self.key, "\(primary),\(secondary)")
+        }
     }
 }
 

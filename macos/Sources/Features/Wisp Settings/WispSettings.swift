@@ -216,21 +216,78 @@ final class WispSettingsWindowController: NSWindowController, NSWindowDelegate {
 
 struct WispSettingsView: View {
     @ObservedObject private var settings = WispSettings.shared
+    @State private var selection: Pane = .appearance
+
+    enum Pane: CaseIterable, Identifiable {
+        case appearance, window, terminal, tabs, keyboard, quickTerminal
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .appearance: "Appearance"
+            case .window: "Window"
+            case .terminal: "Terminal"
+            case .tabs: "Tabs"
+            case .keyboard: "Keyboard"
+            case .quickTerminal: "Quick Terminal"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .appearance: "paintpalette"
+            case .window: "macwindow"
+            case .terminal: "terminal"
+            case .tabs: "sidebar.left"
+            case .keyboard: "keyboard"
+            case .quickTerminal: "rectangle.topthird.inset.filled"
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView {
-                appearance.tabItem { Label("Appearance", systemImage: "paintpalette") }
-                window.tabItem { Label("Window", systemImage: "macwindow") }
-                terminal.tabItem { Label("Terminal", systemImage: "terminal") }
-                tabs.tabItem { Label("Tabs", systemImage: "sidebar.left") }
-                WispKeybindingsView()
-                    .padding(8)
-                    .tabItem { Label("Keyboard", systemImage: "keyboard") }
-                WispQuickTerminalSettings()
-                    .tabItem { Label("Quick Terminal", systemImage: "rectangle.topthird.inset.filled") }
+            // A toolbar of icons like macOS settings windows. TabView would
+            // fold its tabs behind a button on recent macOS.
+            HStack(spacing: 4) {
+                ForEach(Pane.allCases) { pane in
+                    Button {
+                        selection = pane
+                    } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: pane.symbol)
+                                .font(.system(size: 18))
+                                .frame(height: 22)
+                            Text(pane.title)
+                                .font(.system(size: 11))
+                        }
+                        .frame(width: 84, height: 50)
+                        .foregroundStyle(selection == pane ? Color.accentColor : .secondary)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.primary.opacity(selection == pane ? 0.1 : 0)))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .padding(12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            Divider()
+
+            Group {
+                switch selection {
+                case .appearance: appearance
+                case .window: window
+                case .terminal: terminal
+                case .tabs: tabs
+                case .keyboard: WispKeybindingsView().padding(12)
+                case .quickTerminal: WispQuickTerminalSettings()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
