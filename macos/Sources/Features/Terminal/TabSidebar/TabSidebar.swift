@@ -162,19 +162,32 @@ final class TabSidebarModel: ObservableObject {
         self.window = window
 
         let center = NotificationCenter.default
-        let names: [Notification.Name] = [
+
+        // Tab changes the user caused: reload on the next loop iteration so
+        // selection feels instant.
+        let tabEvents: [Notification.Name] = [
             TabSidebarState.tabsDidChange,
             NSWindow.didBecomeKeyNotification,
             NSWindow.didBecomeMainNotification,
             NSWindow.willCloseNotification,
+        ]
+        for name in tabEvents {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.scheduleReload(after: 0)
+            })
+        }
+
+        // Events from the terminals arrive in bursts (a command finishing changes
+        // the pwd, progress and command state at once), so wait a little.
+        let surfaceEvents: [Notification.Name] = [
             .terminalWindowBellDidChangeNotification,
             .ghosttySurfaceProgressDidChange,
             .ghosttySurfacePwdDidChange,
             .tabCommandStateDidChange,
         ]
-        for name in names {
+        for name in surfaceEvents {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.scheduleReload()
+                self?.scheduleReload(after: Self.surfaceEventDelay)
             })
         }
 
@@ -182,14 +195,14 @@ final class TabSidebarModel: ObservableObject {
         let store = TabWorkspaceStore.shared
         store.$activeID.removeDuplicates().dropFirst()
             .sink { [weak self] _ in
-                self?.scheduleReload()
+                self?.scheduleReload(after: 0)
                 DispatchQueue.main.async {
                     (self?.window?.tabGroup?.selectedWindow?.windowController as? TerminalController)?.relabelTabs()
                 }
             }
             .store(in: &cancellables)
         store.$workspaces.dropFirst()
-            .sink { [weak self] _ in self?.scheduleReload() }
+            .sink { [weak self] _ in self?.scheduleReload(after: 0) }
             .store(in: &cancellables)
 
         TabSidebarState.shared.installMouseMonitorIfNeeded()
@@ -200,15 +213,25 @@ final class TabSidebarModel: ObservableObject {
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
-    /// Coalesce bursts of notifications into one reload on the next loop
-    /// iteration, after AppKit has settled the tab group.
-    private func scheduleReload() {
-        guard !reloadScheduled else { return }
+    private static let surfaceEventDelay: TimeInterval = 0.05
+
+    /// Every tab is a window with its own sidebar, but only the selected tab's
+    /// sidebar is on screen. The others skip reloads until they are shown.
+    private var isOnScreen: Bool {
+        guard let window else { return false }
+        return (window.tabGroup?.selectedWindow ?? window) === window
+    }
+
+    /// Coalesce bursts of notifications into one reload, after AppKit has
+    /// settled the tab group. Hidden sidebars reload when they're shown: their
+    /// window becoming key triggers a reload.
+    private func scheduleReload(after delay: TimeInterval) {
+        guard isOnScreen, !reloadScheduled else { return }
         reloadScheduled = true
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.reloadScheduled = false
-            self.reload()
+            if self.isOnScreen { self.reload() }
         }
     }
 
@@ -238,9 +261,9 @@ final class TabSidebarModel: ObservableObject {
                 needsAttention: !isSelected && (hasBell || activity == .error || Self.finishedUnseen(w)))
         }
 
-        // Always publish: the active workspace may have changed even when the
-        // tabs did not.
-        tabs = newTabs
+        // Views read the active workspace from the store directly, so only
+        // publish when the tabs themselves changed.
+        if newTabs != tabs { tabs = newTabs }
     }
 
     /// Whether a long command finished in any split since the tab was viewed.
@@ -1079,8 +1102,14 @@ private struct TabCommandBadge: View {
     private static let minimumRunning: TimeInterval = 2
     private static let minimumFinished: TimeInterval = 5
 
+    private var isRunning: Bool {
+        if case .running = state { return true }
+        return false
+    }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        // Running commands tick every second; "finished 3m ago" only needs minutes.
+        TimelineView(.periodic(from: .now, by: isRunning ? 1 : 30)) { context in
             switch state {
             case .running(let since):
                 let elapsed = context.date.timeIntervalSince(since)

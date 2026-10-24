@@ -49,10 +49,24 @@ enum TabGitInfo {
     /// The git directory for each working directory we've looked up.
     private static var gitDirCache: [String: URL?] = [:]
 
+    /// The branch read from each HEAD file and the file's modification date.
+    private static var branchCache: [String: (modified: Date?, branch: String?)] = [:]
+
     static func branch(at path: String) -> String? {
-        guard let gitDir = gitDir(for: path),
-              let head = try? String(contentsOf: gitDir.appendingPathComponent("HEAD"), encoding: .utf8)
-        else { return nil }
+        guard let gitDir = gitDir(for: path) else { return nil }
+        let headPath = gitDir.appendingPathComponent("HEAD").path
+
+        // Only re-read HEAD when it changed, e.g. after `git checkout`.
+        let modified = (try? FileManager.default.attributesOfItem(atPath: headPath))?[.modificationDate] as? Date
+        if let cached = branchCache[headPath], cached.modified == modified { return cached.branch }
+
+        let branch = readBranch(headPath)
+        branchCache[headPath] = (modified, branch)
+        return branch
+    }
+
+    private static func readBranch(_ headPath: String) -> String? {
+        guard let head = try? String(contentsOfFile: headPath, encoding: .utf8) else { return nil }
 
         let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
         let refPrefix = "ref: refs/heads/"

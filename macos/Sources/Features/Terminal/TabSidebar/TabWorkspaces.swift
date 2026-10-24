@@ -185,14 +185,28 @@ enum TabLayoutStore {
             .appendingPathComponent(".config/ghostty/tab-layouts.json")
     }
 
+    /// The parsed file and its modification date. The sidebar asks for layouts
+    /// on every render, so the file is only read again after it changes.
+    private static var cache: (modified: Date?, layouts: [TabLayout])?
+
     static func load() -> [TabLayout] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        do {
-            return try JSONDecoder().decode([TabLayout].self, from: data)
-        } catch {
-            Ghostty.logger.warning("failed to parse tab layouts: \(error.localizedDescription, privacy: .public)")
-            return []
+        let modified = (try? FileManager.default.attributesOfItem(atPath: fileURL.path))?[.modificationDate] as? Date
+        if let cache, cache.modified == modified { return cache.layouts }
+
+        let layouts: [TabLayout]
+        if let data = try? Data(contentsOf: fileURL) {
+            do {
+                layouts = try JSONDecoder().decode([TabLayout].self, from: data)
+            } catch {
+                Ghostty.logger.warning("failed to parse tab layouts: \(error.localizedDescription, privacy: .public)")
+                layouts = []
+            }
+        } else {
+            layouts = []
         }
+
+        cache = (modified, layouts)
+        return layouts
     }
 
     /// Add a layout, replacing any layout with the same name.
