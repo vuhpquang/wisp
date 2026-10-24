@@ -125,6 +125,11 @@ final class WispUpdater: ObservableObject {
 
     /// Quit and open the newly installed app. Restored windows bring the tabs back.
     func restart() {
+        Self.relaunch()
+    }
+
+    /// Quit Wisp and open it again once it has exited.
+    static func relaunch() {
         let path = Bundle.main.bundlePath
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")

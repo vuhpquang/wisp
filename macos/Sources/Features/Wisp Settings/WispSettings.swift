@@ -107,7 +107,7 @@ final class WispSettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false)
@@ -149,20 +149,32 @@ struct WispSettingsView: View {
 
             Divider()
 
+            Text("Changes apply right away. Saved to \(WispSettings.fileURL.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")).")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+
             HStack {
-                Text("Saved to \(WispSettings.fileURL.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")), loaded after your config.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
                 Spacer()
                 Button("Open Config File") {
                     (NSApp.delegate as? AppDelegate)?.ghostty.openConfig()
                 }
+                Button("Reload Config") {
+                    WispSettings.shared.reload()
+                    (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
+                }
+                .help("Apply changes made to the config file. Changes made here apply on their own.")
+                Button("Restart Wisp") { WispUpdater.relaunch() }
+                    .help("Some options only apply to new windows or after a restart.")
             }
-            .padding(12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
-        .frame(width: 560, height: 520)
+        .frame(width: 600, height: 560)
     }
 
     // MARK: Tabs
