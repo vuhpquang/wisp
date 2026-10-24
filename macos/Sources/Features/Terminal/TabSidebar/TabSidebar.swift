@@ -288,6 +288,20 @@ final class TabSidebarModel: ObservableObject {
         }
     }
 
+    /// The visible text of a tab's focused split, without trailing blank lines.
+    func previewText(for id: Tab.ID, maxLines: Int = 24) -> String? {
+        guard let surface = (window(for: id)?.windowController as? BaseTerminalController)?.focusedSurface else {
+            return nil
+        }
+
+        var lines = surface.cachedVisibleContents.get()
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) }
+        while let last = lines.last, last.isEmpty { lines.removeLast() }
+        guard !lines.isEmpty else { return nil }
+        return lines.suffix(maxLines).joined(separator: "\n")
+    }
+
     /// Tabs in any workspace whose title, folder or branch contains the query.
     func search(_ query: String) -> [Tab] {
         let words = query.lowercased().split(separator: " ")
@@ -966,8 +980,8 @@ private struct TabSidebarTile: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .strokeBorder(tab.isSelected ? Color.primary.opacity(0.3) : Color.primary.opacity(0.08)))
         .contentShape(Rectangle())
-        .help(tab.title)
         .onHover { isHovering = $0 }
+        .modifier(TabPreviewOnHover(tab: tab, model: model, isHovering: isHovering))
         .onTapGesture { model.select(tab.id) }
         .contextMenu { TabSidebarContextMenu(tab: tab, model: model) }
     }
@@ -1060,6 +1074,46 @@ private struct TabCommandBadge: View {
     }
 }
 
+/// Shows the visible text of a tab in a popover after hovering it for a moment.
+private struct TabPreviewOnHover: ViewModifier {
+    let tab: TabSidebarModel.Tab
+    let model: TabSidebarModel
+    let isHovering: Bool
+
+    @State private var preview: String?
+    @State private var isPresented = false
+
+    private static let delay: Duration = .milliseconds(600)
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: isHovering) {
+                guard isHovering, !tab.isSelected else {
+                    isPresented = false
+                    return
+                }
+                try? await Task.sleep(for: Self.delay)
+                guard !Task.isCancelled, isHovering else { return }
+                preview = model.previewText(for: tab.id)
+                isPresented = preview != nil
+            }
+            .popover(isPresented: $isPresented, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(tab.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                    Text(preview ?? "")
+                        .font(.system(size: 10, design: .monospaced))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .frame(width: 460, alignment: .leading)
+            }
+    }
+}
+
 /// The context menu shared by sidebar rows and pinned tiles.
 private struct TabSidebarContextMenu: View {
     let tab: TabSidebarModel.Tab
@@ -1123,6 +1177,7 @@ private struct TabSidebarRow: View {
     @ObservedObject var model: TabSidebarModel
     var showsWorkspace = false
     @State private var isHovering = false
+    @State private var showsPreview = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1196,6 +1251,7 @@ private struct TabSidebarRow: View {
                 .strokeBorder(tab.isSelected ? Color.primary.opacity(0.18) : .clear))
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
+        .modifier(TabPreviewOnHover(tab: tab, model: model, isHovering: isHovering))
         .onTapGesture { model.select(tab.id) }
         .contextMenu { TabSidebarContextMenu(tab: tab, model: model) }
     }
