@@ -8,8 +8,8 @@ final class OutputSharer: NSObject {
     static let shared = OutputSharer()
 
     /// The menu items for a selection, added to the terminal's context menu.
-    func menuItem(for text: String, title: String) -> NSMenuItem {
-        let payload = Payload(text: text, title: title)
+    func menuItem(for text: String, title: String, surface: Ghostty.SurfaceView? = nil) -> NSMenuItem {
+        let payload = Payload(text: text, title: title, surface: surface)
         let menu = NSMenu()
         for (label, action, symbol) in [
             ("Copy as Markdown", #selector(copyMarkdown(_:)), "text.badge.checkmark"),
@@ -23,6 +23,15 @@ final class OutputSharer: NSObject {
             menu.addItem(item)
         }
 
+        menu.addItem(.separator())
+        for agent in Agent.available {
+            let item = NSMenuItem(title: agent.title, action: #selector(askAgent(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = AgentRequest(agent: agent, payload: payload)
+            item.setImageIfDesired(systemSymbolName: agent.symbol)
+            menu.addItem(item)
+        }
+
         let item = NSMenuItem(title: "Share Selection", action: nil, keyEquivalent: "")
         item.setImageIfDesired(systemSymbolName: "square.and.arrow.up")
         item.submenu = menu
@@ -32,9 +41,131 @@ final class OutputSharer: NSObject {
     private final class Payload {
         let text: String
         let title: String
-        init(text: String, title: String) {
+        weak var surface: Ghostty.SurfaceView?
+        init(text: String, title: String, surface: Ghostty.SurfaceView?) {
             self.text = text
             self.title = title
+            self.surface = surface
+        }
+    }
+
+    // MARK: Agents
+
+    /// Somewhere to ask about the selection: a chat app, or a CLI agent run in
+    /// a new split next to the terminal.
+    private enum Agent: CaseIterable {
+        case claudeDesktop, claudeCode, codex, gemini
+
+        var title: String {
+            switch self {
+            case .claudeDesktop: "Ask Claude"
+            case .claudeCode: "Ask Claude Code in a New Split"
+            case .codex: "Ask Codex in a New Split"
+            case .gemini: "Ask Gemini CLI in a New Split"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .claudeDesktop: "bubble.left.and.text.bubble.right"
+            case .claudeCode, .codex, .gemini: "terminal"
+            }
+        }
+
+        /// The command that starts the CLI with `prompt` (a shell expression) as
+        /// its first message, staying interactive.
+        func command(prompt: String) -> String? {
+            switch self {
+            case .claudeDesktop: nil
+            case .claudeCode: "claude \(prompt)"
+            case .codex: "codex \(prompt)"
+            case .gemini: "gemini -i \(prompt)"
+            }
+        }
+
+        private var executable: String? {
+            switch self {
+            case .claudeDesktop: nil
+            case .claudeCode: "claude"
+            case .codex: "codex"
+            case .gemini: "gemini"
+            }
+        }
+
+        var isInstalled: Bool {
+            if self == .claudeDesktop {
+                return NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.claudeBundleID) != nil
+            }
+            guard let executable else { return false }
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            return ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(home)/.claude/local"]
+                .contains { FileManager.default.isExecutableFile(atPath: "\($0)/\(executable)") }
+        }
+
+        static let claudeBundleID = "com.anthropic.claudefordesktop"
+
+        static var available: [Agent] { allCases.filter(\.isInstalled) }
+    }
+
+    private final class AgentRequest {
+        let agent: Agent
+        let payload: Payload
+        init(agent: Agent, payload: Payload) {
+            self.agent = agent
+            self.payload = payload
+        }
+    }
+
+    private static func prompt(for payload: Payload) -> String {
+        "Here is output from my terminal (\(payload.title)). Help me understand it and what to do next.\n\n```\n\(trimmed(payload.text))\n```\n"
+    }
+
+    @objc private func askAgent(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? AgentRequest else { return }
+        let prompt = Self.prompt(for: request.payload)
+
+        guard request.agent != .claudeDesktop else {
+            askClaudeDesktop(prompt)
+            return
+        }
+
+        // Pass the prompt through a file so no part of the output is ever
+        // interpreted by the shell.
+        guard let surface = request.payload.surface,
+              let controller = surface.window?.windowController as? BaseTerminalController else { return }
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/Wisp")
+        let file = dir.appendingPathComponent("prompt-\(UUID().uuidString).md")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try prompt.write(to: file, atomically: true, encoding: .utf8)
+        } catch {
+            Ghostty.logger.warning("failed to write prompt: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        guard let command = request.agent.command(prompt: "\"$(cat '\(file.path)')\"") else { return }
+        var config = Ghostty.SurfaceConfiguration()
+        config.workingDirectory = surface.pwd
+        config.initialInput = command + "\n"
+        _ = controller.newSplit(at: surface, direction: .right, baseConfig: config)
+    }
+
+    /// Open a new chat in the Claude app with the prompt filled in. The prompt
+    /// is also copied in case the app doesn't fill it in.
+    private func askClaudeDesktop(_ prompt: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(prompt, forType: .string)
+
+        var components = URLComponents()
+        components.scheme = "claude"
+        components.host = "claude.ai"
+        components.path = "/new"
+        components.queryItems = [URLQueryItem(name: "q", value: prompt)]
+        if let url = components.url, NSWorkspace.shared.open(url) { return }
+
+        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Agent.claudeBundleID) {
+            NSWorkspace.shared.openApplication(at: app, configuration: .init())
         }
     }
 

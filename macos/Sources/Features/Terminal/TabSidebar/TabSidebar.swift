@@ -24,6 +24,18 @@ final class TabSidebarState: ObservableObject {
     private static let revealEdge: CGFloat = 6
 
     private static let pinnedKey = "TabSidebarPinned"
+    private static let detailsKey = "TabSidebarShowsDetails"
+    private static let previewKey = "TabSidebarShowsPreview"
+
+    /// Show each tab's folder, git branch and command time under its title.
+    @Published var showsDetails: Bool {
+        didSet { UserDefaults.ghostty.set(showsDetails, forKey: Self.detailsKey) }
+    }
+
+    /// Show a tab's visible text when hovering it.
+    @Published var showsPreview: Bool {
+        didSet { UserDefaults.ghostty.set(showsPreview, forKey: Self.previewKey) }
+    }
     private static let widthKey = "TabSidebarWidth"
 
     /// Whether the sidebar takes up space next to the terminal. When false the
@@ -52,6 +64,8 @@ final class TabSidebarState: ObservableObject {
     private init() {
         isEnabled = (NSApp.delegate as? AppDelegate)?.ghostty.config.macosVerticalTabs ?? true
         isPinned = UserDefaults.ghostty.object(forKey: Self.pinnedKey) as? Bool ?? true
+        showsDetails = UserDefaults.ghostty.object(forKey: Self.detailsKey) as? Bool ?? true
+        showsPreview = UserDefaults.ghostty.object(forKey: Self.previewKey) as? Bool ?? true
         let savedWidth = (UserDefaults.ghostty.object(forKey: Self.widthKey) as? Double).map { CGFloat($0) }
         width = Self.clampWidth(savedWidth ?? Self.defaultWidth)
 
@@ -852,6 +866,9 @@ struct TabSidebarView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 8)
             }
+            // Right-clicking the empty part of the sidebar shows its options.
+            .contentShape(Rectangle())
+            .contextMenu { TabSidebarBackgroundMenu(model: model) }
     }
 
     private var searchResults: some View {
@@ -1272,6 +1289,38 @@ private struct TabSidebarSleepingRow: View {
     }
 }
 
+/// The menu for the sidebar's empty space: new tabs and sidebar options.
+private struct TabSidebarBackgroundMenu: View {
+    let model: TabSidebarModel
+    @ObservedObject private var state = TabSidebarState.shared
+    @ObservedObject private var sleep = TabSleepStore.shared
+
+    var body: some View {
+        Button("New Tab", action: model.newTab)
+        Button("New Workspace…", action: model.promptNewWorkspace)
+
+        Divider()
+
+        Toggle("Show Folder, Branch and Command Time", isOn: $state.showsDetails)
+        Toggle("Preview Tabs on Hover", isOn: $state.showsPreview)
+        Picker("Unload Idle Tabs", selection: $sleep.autoUnloadMinutes) {
+            ForEach(TabSleepStore.autoUnloadChoices, id: \.self) { minutes in
+                Text(minutes == 0 ? "Manually" : minutes < 60 ? "After \(minutes) Minutes" : "After \(minutes / 60) Hour\(minutes == 60 ? "" : "s")")
+                    .tag(minutes)
+            }
+        }
+
+        Divider()
+
+        TabSidebarLayoutMenu()
+
+        Divider()
+
+        Button("Agent Monitor") { AgentMonitorWindowController.shared.toggle() }
+        Button("Settings…") { WispSettingsWindowController.shared.show() }
+    }
+}
+
 /// Tab layout options shared by the sidebar menus.
 struct TabSidebarLayoutMenu: View {
     @ObservedObject private var state = TabSidebarState.shared
@@ -1299,7 +1348,7 @@ private struct TabPreviewOnHover: ViewModifier {
     func body(content: Content) -> some View {
         content
             .task(id: isHovering) {
-                guard isHovering, !tab.isSelected else {
+                guard isHovering, !tab.isSelected, TabSidebarState.shared.showsPreview else {
                     isPresented = false
                     return
                 }
@@ -1392,8 +1441,8 @@ private struct TabSidebarRow: View {
     let tab: TabSidebarModel.Tab
     @ObservedObject var model: TabSidebarModel
     var showsWorkspace = false
+    @ObservedObject private var state = TabSidebarState.shared
     @State private var isHovering = false
-    @State private var showsPreview = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1420,7 +1469,7 @@ private struct TabSidebarRow: View {
                     .truncationMode(.tail)
                     .foregroundStyle(tab.isSelected ? .primary : .secondary)
 
-                if subtitle != nil || tab.command != nil {
+                if state.showsDetails, subtitle != nil || tab.command != nil {
                     HStack(spacing: 4) {
                         if let subtitle {
                             Text(subtitle)
@@ -1458,7 +1507,7 @@ private struct TabSidebarRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: subtitle != nil || tab.command != nil ? 40 : 30)
+        .frame(height: state.showsDetails && (subtitle != nil || tab.command != nil) ? 40 : 30)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(background))
