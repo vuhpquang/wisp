@@ -41,12 +41,49 @@ final class TabSidebarState: ObservableObject {
     /// at the left edge of the window.
     @Published private(set) var isRevealed = false
 
+    /// Vertical tabs, or the native horizontal tab bar. Follows the
+    /// `macos-vertical-tabs` option and can be switched from the tab menu.
+    @Published private(set) var isEnabled: Bool
+
+    private var configObserver: NSObjectProtocol?
+
     private var mouseMonitor: Any?
 
     private init() {
+        isEnabled = (NSApp.delegate as? AppDelegate)?.ghostty.config.macosVerticalTabs ?? true
         isPinned = UserDefaults.ghostty.object(forKey: Self.pinnedKey) as? Bool ?? true
         let savedWidth = (UserDefaults.ghostty.object(forKey: Self.widthKey) as? Double).map { CGFloat($0) }
         width = Self.clampWidth(savedWidth ?? Self.defaultWidth)
+
+        // Editing the option in Settings or the config file switches live.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .ghosttyConfigDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] n in
+            guard n.object == nil,
+                  let config = n.userInfo?[Notification.Name.GhosttyConfigChangeKey] as? Ghostty.Config else { return }
+            self?.apply(enabled: config.macosVerticalTabs)
+        }
+    }
+
+    /// Switch between vertical and horizontal tabs and remember the choice.
+    func setEnabled(_ enabled: Bool) {
+        apply(enabled: enabled)
+        WispSettings.shared.set("macos-vertical-tabs", enabled ? "true" : "false")
+    }
+
+    private func apply(enabled: Bool) {
+        guard enabled != isEnabled else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isEnabled = enabled
+            isRevealed = false
+        }
+
+        // Workspaces only scope tab numbers while the sidebar shows them.
+        DispatchQueue.main.async {
+            TerminalController.all.forEach { $0.relabelTabs() }
+        }
     }
 
     static func clampWidth(_ width: CGFloat) -> CGFloat {
@@ -621,16 +658,16 @@ struct TabSidebarContainer<Content: View>: View {
             // Never animate the terminal size: every intermediate size would
             // resize the pty and make the shell redraw its prompt. The sidebar
             // slides over the terminal instead and the terminal jumps once.
-            .padding(.leading, state.isPinned ? state.width + 1 : 0)
+            .padding(.leading, state.isEnabled && state.isPinned ? state.width + 1 : 0)
             .transaction { $0.animation = nil }
             .overlay(alignment: .leading) {
-                if state.isPinned {
+                if state.isEnabled && state.isPinned {
                     pinnedSidebar
                         .transition(.move(edge: .leading))
                 }
             }
             .overlay {
-                if !state.isPinned && state.isRevealed {
+                if state.isEnabled && !state.isPinned && state.isRevealed {
                     GeometryReader { geo in
                         floatingSidebar
                             .frame(height: geo.size.height * TabSidebarState.floatingHeightFraction)
@@ -1145,6 +1182,19 @@ private struct TabCommandBadge: View {
     }
 }
 
+/// Tab layout options shared by the sidebar menus.
+struct TabSidebarLayoutMenu: View {
+    @ObservedObject private var state = TabSidebarState.shared
+
+    var body: some View {
+        Button(state.isPinned ? "Collapse Sidebar" : "Pin Sidebar") {
+            _ = state.togglePinned()
+        }
+        .keyboardShortcut("e", modifiers: .command)
+        Button("Use Horizontal Tabs") { state.setEnabled(false) }
+    }
+}
+
 /// Shows the visible text of a tab in a popover after hovering it for a moment.
 private struct TabPreviewOnHover: ViewModifier {
     let tab: TabSidebarModel.Tab
@@ -1209,6 +1259,8 @@ private struct TabSidebarContextMenu: View {
         Divider()
         Button("Close Tab") { model.close(tab.id) }
         Button("Close Other Tabs") { model.closeOthers(tab.id) }
+        Divider()
+        TabSidebarLayoutMenu()
     }
 }
 

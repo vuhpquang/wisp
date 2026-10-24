@@ -92,10 +92,17 @@ class TerminalWindow: NSWindow {
     /// The sidebar model of this window when it uses vertical tabs.
     var tabSidebarModel: TabSidebarModel?
 
+    /// Whether this window can show the vertical sidebar. Titlebar tabs keep
+    /// the native tabs since they live in the titlebar itself.
+    private(set) var supportsVerticalTabs = false
+
     /// Whether this window shows its tabs in the vertical sidebar instead of the
-    /// native tab bar. Titlebar tabs keep the native tabs since they live in
-    /// the titlebar itself.
-    private(set) var usesVerticalTabs = false
+    /// native tab bar. This can be switched while running.
+    var usesVerticalTabs: Bool {
+        supportsVerticalTabs && TabSidebarState.shared.isEnabled
+    }
+
+    private var verticalTabsCancellable: AnyCancellable?
 
     // MARK: NSWindow Overrides
 
@@ -137,11 +144,17 @@ class TerminalWindow: NSWindow {
 
         // Setup our initial config
         derivedConfig = .init(config)
-        usesVerticalTabs = config.macosVerticalTabs && derivedConfig.macosTitlebarStyle != .tabs
+        supportsVerticalTabs = derivedConfig.macosTitlebarStyle != .tabs
 
         // New tabs open in the active workspace. Restoration overrides this.
-        if usesVerticalTabs {
+        if supportsVerticalTabs {
             workspaceID = TabWorkspaceStore.shared.activeID
+
+            // Show the native tab bar only while the sidebar is off.
+            verticalTabsCancellable = TabSidebarState.shared.$isEnabled
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.updateNativeTabBarVisibility() }
         }
 
         // If there is a hardcoded title in the configuration, we set that
@@ -300,10 +313,8 @@ class TerminalWindow: NSWindow {
         // it. This has been verified to work on macOS 12 to 26
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
-            if usesVerticalTabs {
-                // The vertical sidebar replaces the native tab bar.
-                childViewController.isHidden = true
-            }
+            // The vertical sidebar replaces the native tab bar.
+            childViewController.isHidden = usesVerticalTabs
             tabBarDidAppear()
         }
     }
@@ -366,6 +377,12 @@ class TerminalWindow: NSWindow {
             if titlebarAccessoryViewControllers.firstIndex(of: resetZoomAccessory) == nil {
                 addTitlebarAccessoryViewController(resetZoomAccessory)
             }
+        }
+    }
+
+    private func updateNativeTabBarVisibility() {
+        for controller in titlebarAccessoryViewControllers where controller.identifier == Self.tabBarIdentifier {
+            controller.isHidden = usesVerticalTabs
         }
     }
 
@@ -892,7 +909,8 @@ extension TerminalWindow {
         menu.removeItems(withIdentifiers: [
             Self.tabColorSeparatorIdentifier,
             Self.changeTitleMenuItemIdentifier,
-            Self.tabColorPaletteIdentifier
+            Self.tabColorPaletteIdentifier,
+            Self.useVerticalTabsIdentifier,
         ])
 
         let separator = NSMenuItem.separator()
@@ -915,6 +933,23 @@ extension TerminalWindow {
             (target?.window as? TerminalWindow)?.tabColor = color
         }
         menu.addItem(paletteItem)
+
+        if supportsVerticalTabs {
+            let verticalItem = NSMenuItem(
+                title: "Use Vertical Tabs",
+                action: #selector(TerminalWindow.useVerticalTabs(_:)),
+                keyEquivalent: "")
+            verticalItem.identifier = Self.useVerticalTabsIdentifier
+            verticalItem.target = self
+            verticalItem.setImageIfDesired(systemSymbolName: "sidebar.left")
+            menu.addItem(verticalItem)
+        }
+    }
+
+    private static let useVerticalTabsIdentifier = NSUserInterfaceItemIdentifier("com.vuhpquang.wisp.useVerticalTabs")
+
+    @objc private func useVerticalTabs(_ sender: Any?) {
+        TabSidebarState.shared.setEnabled(true)
     }
 }
 

@@ -222,7 +222,7 @@ struct WispSettingsView: View {
         Form {
             SettingToggle(
                 key: "macos-vertical-tabs", title: "Vertical tab sidebar", defaultValue: true,
-                note: "Applies to new windows. ⌘E pins or collapses the sidebar.")
+                note: "Also in the tab menu. ⌘E pins or collapses the sidebar.")
             SettingPicker(key: "notify-on-command-finish", title: "Notify when a command finishes", options: ["never", "unfocused", "always"])
             SettingPicker(
                 key: "notify-on-command-finish-action", title: "Notify by",

@@ -707,7 +707,9 @@ extension Ghostty {
                 guard target.tag == GHOSTTY_TARGET_SURFACE,
                       let surface = target.target.surface,
                       let surfaceView = self.surfaceView(from: surface),
-                      let model = (surfaceView.window as? TerminalWindow)?.tabSidebarModel else { return false }
+                      let window = surfaceView.window as? TerminalWindow,
+                      window.usesVerticalTabs,
+                      let model = window.tabSidebarModel else { return false }
                 return model.gotoNextAttentionTab()
 
             case GHOSTTY_ACTION_GOTO_WORKSPACE:
@@ -1169,6 +1171,7 @@ extension Ghostty {
                   let surface = target.target.surface,
                   let surfaceView = self.surfaceView(from: surface),
                   let window = surfaceView.window as? TerminalWindow,
+                  window.usesVerticalTabs,
                   let model = window.tabSidebarModel else { return false }
 
             let workspaces = TabWorkspaceStore.shared.workspaces

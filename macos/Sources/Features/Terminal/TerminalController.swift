@@ -1122,7 +1122,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Initialize our content view to the SwiftUI root
         let container: TerminalViewContainer
-        if (window as? TerminalWindow)?.usesVerticalTabs == true {
+        if (window as? TerminalWindow)?.supportsVerticalTabs == true {
             let sidebarModel = TabSidebarModel(window: window)
             (window as? TerminalWindow)?.tabSidebarModel = sidebarModel
             let backgroundColor = config.backgroundColor
