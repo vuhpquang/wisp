@@ -230,7 +230,8 @@ class AppDelegate: NSObject,
         ghosttyConfigDidChange(config: ghostty.config)
 
         // Wisp is built from source, so Sparkle must never run: it would replace
-        // the app with upstream Ghostty. See `checkForUpdates`.
+        // the app with upstream Ghostty. Wisp updates from its checkout instead.
+        WispUpdater.shared.start()
 
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
@@ -1005,8 +1006,8 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func checkForUpdates(_ sender: Any?) {
-        // Wisp updates by rebuilding from the fork: scripts/install-wisp.sh.
-        NSWorkspace.shared.open(URL(string: "https://github.com/vuhpquang/wisp")!)
+        // Wisp updates by rebuilding from its checkout, see WispUpdater.
+        WispUpdater.shared.check(userInitiated: true)
         // UpdateSimulator.happyPath.simulate(with: updateViewModel)
     }
 

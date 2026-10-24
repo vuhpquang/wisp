@@ -796,6 +796,10 @@ struct TabSidebarView: View {
 
     private var footer: some View {
         VStack(spacing: 0) {
+            WispUpdateBanner()
+                .padding(.horizontal, 8)
+                .padding(.top, 6)
+
             Button(action: model.newTab) {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
