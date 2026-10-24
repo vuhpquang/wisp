@@ -12,18 +12,29 @@ final class TabSidebarState: ObservableObject {
     /// order, titles, colors, selection.
     static let tabsDidChange = Notification.Name("com.mitchellh.ghostty.tabSidebarTabsDidChange")
 
-    static let width: CGFloat = 220
+    static let defaultWidth: CGFloat = 220
+    static let widthRange: ClosedRange<CGFloat> = 150...420
+
+    /// Height of the floating sidebar shown while collapsed, as a fraction of
+    /// the window height. It is centered vertically.
+    static let floatingHeightFraction: CGFloat = 0.75
 
     /// How close to the left edge of the window the mouse has to be to reveal
     /// a collapsed sidebar.
     private static let revealEdge: CGFloat = 6
 
     private static let pinnedKey = "TabSidebarPinned"
+    private static let widthKey = "TabSidebarWidth"
 
     /// Whether the sidebar takes up space next to the terminal. When false the
     /// sidebar is collapsed and floats over the terminal on hover.
     @Published var isPinned: Bool {
         didSet { UserDefaults.ghostty.set(isPinned, forKey: Self.pinnedKey) }
+    }
+
+    /// The sidebar width, resized by dragging its trailing edge.
+    @Published var width: CGFloat {
+        didSet { UserDefaults.ghostty.set(Double(width), forKey: Self.widthKey) }
     }
 
     /// Whether a collapsed sidebar is temporarily shown because the mouse is
@@ -34,6 +45,12 @@ final class TabSidebarState: ObservableObject {
 
     private init() {
         isPinned = UserDefaults.ghostty.object(forKey: Self.pinnedKey) as? Bool ?? true
+        let savedWidth = (UserDefaults.ghostty.object(forKey: Self.widthKey) as? Double).map { CGFloat($0) }
+        width = Self.clampWidth(savedWidth ?? Self.defaultWidth)
+    }
+
+    static func clampWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, widthRange.lowerBound), widthRange.upperBound)
     }
 
     /// Toggle between pinned and collapsed. Returns false if no window uses
@@ -67,7 +84,7 @@ final class TabSidebarState: ObservableObject {
         let x = event.locationInWindow.x
         if !isRevealed, x <= Self.revealEdge {
             withAnimation(.easeOut(duration: 0.15)) { isRevealed = true }
-        } else if isRevealed, x > Self.width + 32 {
+        } else if isRevealed, x > width + 32 {
             withAnimation(.easeIn(duration: 0.15)) { isRevealed = false }
         }
     }
@@ -216,41 +233,89 @@ struct TabSidebarContainer<Content: View>: View {
     let backgroundColor: Color
     let content: Content
 
+    /// The width while the resize handle is being dragged. The terminal is only
+    /// resized once the drag ends so it doesn't reflow on every mouse move.
+    @State private var dragWidth: CGFloat?
+
     init(model: TabSidebarModel, backgroundColor: Color, @ViewBuilder content: () -> Content) {
         self.model = model
         self.backgroundColor = backgroundColor
         self.content = content()
     }
 
+    private var sidebarWidth: CGFloat { dragWidth ?? state.width }
+
     var body: some View {
-        HStack(spacing: 0) {
-            if state.isPinned {
-                TabSidebarView(model: model)
-                    .frame(width: TabSidebarState.width)
-                    .background(Color.black.opacity(0.12))
-                    .transition(.move(edge: .leading))
-
-                Divider()
+        content
+            // Never animate the terminal size: every intermediate size would
+            // resize the pty and make the shell redraw its prompt. The sidebar
+            // slides over the terminal instead and the terminal jumps once.
+            .padding(.leading, state.isPinned ? state.width + 1 : 0)
+            .transaction { $0.animation = nil }
+            .overlay(alignment: .leading) {
+                if state.isPinned {
+                    pinnedSidebar
+                        .transition(.move(edge: .leading))
+                }
             }
-
-            content
-        }
-        .overlay(alignment: .topLeading) {
-            if !state.isPinned && state.isRevealed {
-                TabSidebarView(model: model)
-                    .frame(width: TabSidebarState.width)
-                    .frame(maxHeight: .infinity)
-                    .background(backgroundColor.opacity(0.92))
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.12)))
-                    .shadow(color: .black.opacity(0.35), radius: 14, x: 2, y: 0)
-                    .padding(6)
+            .overlay {
+                if !state.isPinned && state.isRevealed {
+                    GeometryReader { geo in
+                        floatingSidebar
+                            .frame(height: geo.size.height * TabSidebarState.floatingHeightFraction)
+                            .padding(.leading, 6)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    }
                     .transition(.move(edge: .leading).combined(with: .opacity))
+                }
             }
+    }
+
+    private var pinnedSidebar: some View {
+        HStack(spacing: 0) {
+            TabSidebarView(model: model)
+                .frame(width: sidebarWidth)
+                .background(Color.black.opacity(0.12))
+
+            Divider()
         }
+        .overlay(alignment: .trailing) { resizeHandle }
+    }
+
+    private var floatingSidebar: some View {
+        TabSidebarView(model: model)
+            .frame(width: sidebarWidth)
+            .background(backgroundColor.opacity(0.92))
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12)))
+            .overlay(alignment: .trailing) { resizeHandle }
+            .shadow(color: .black.opacity(0.35), radius: 14, x: 2, y: 0)
+    }
+
+    private var resizeHandle: some View {
+        Color.clear
+            .frame(width: 8)
+            .contentShape(Rectangle())
+            .offset(x: 4)
+            .onHover { inside in
+                if inside {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        dragWidth = TabSidebarState.clampWidth(state.width + value.translation.width)
+                    }
+                    .onEnded { _ in
+                        if let dragWidth { state.width = dragWidth }
+                        dragWidth = nil
+                    })
     }
 }
 
