@@ -1836,7 +1836,15 @@ private struct TabSidebarContextMenu: View {
         }
         Menu("Tab Color") {
             ForEach(TerminalTabColor.allCases, id: \.self) { color in
-                Button(color.localizedName) { model.setColor(color, for: tab.id) }
+                // A swatch next to each name, ringed on the tab's current color.
+                Button { model.setColor(color, for: tab.id) } label: {
+                    Label {
+                        Text(color.localizedName)
+                    } icon: {
+                        Image(nsImage: color.swatchImage(selected: color == tab.color))
+                    }
+                }
+                .labelStyle(.titleAndIcon)
             }
         }
         Divider()
