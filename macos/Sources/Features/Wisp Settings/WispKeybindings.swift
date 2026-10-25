@@ -282,7 +282,7 @@ private struct QuickTerminalSizePickers: View {
     @ObservedObject private var settings = WispSettings.shared
 
     private static let key = "quick-terminal-size"
-    private static let sizes = ["20%", "30%", "40%", "50%", "60%", "75%", "100%"]
+    private static let sizes = ["20%", "25%", "30%", "40%", "50%", "60%", "75%", "100%"]
 
     private var parts: [String] {
         (settings.value(Self.key) ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -299,7 +299,7 @@ private struct QuickTerminalSizePickers: View {
                 set: { save(primary: $0, secondary: parts.count > 1 ? parts[1] : "") }
             )) {
                 Text("Default").tag("")
-                ForEach(Self.sizes, id: \.self) { Text($0).tag($0) }
+                ForEach(Self.choices(Self.sizes, current: parts.first), id: \.self) { Text($0).tag($0) }
             }
 
             Picker(isVertical ? "Height (centered)" : "Width (centered)", selection: Binding(
@@ -307,9 +307,16 @@ private struct QuickTerminalSizePickers: View {
                 set: { save(primary: parts.first ?? "", secondary: $0) }
             )) {
                 Text("Full").tag("")
-                ForEach(Self.sizes.dropLast(), id: \.self) { Text($0).tag($0) }
+                ForEach(Self.choices(Array(Self.sizes.dropLast()), current: parts.count > 1 ? parts[1] : nil), id: \.self) { Text($0).tag($0) }
             }
         }
+    }
+
+    /// The listed sizes plus the current one if it isn't listed (e.g. "800px"
+    /// from the config file), so the picker never shows blank.
+    private static func choices(_ sizes: [String], current: String?) -> [String] {
+        guard let current, !current.isEmpty, !sizes.contains(current) else { return sizes }
+        return sizes + [current]
     }
 
     private func save(primary: String, secondary: String) {
