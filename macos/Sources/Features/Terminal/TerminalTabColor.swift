@@ -12,6 +12,11 @@ enum TerminalTabColor: Int, CaseIterable, Codable {
     case green
     case teal
     case graphite
+    // Wisp: more colors, appended so saved raw values keep their meaning.
+    case indigo
+    case cyan
+    case lime
+    case brown
 
     var localizedName: String {
         switch self {
@@ -35,6 +40,14 @@ enum TerminalTabColor: Int, CaseIterable, Codable {
             return "Teal"
         case .graphite:
             return "Graphite"
+        case .indigo:
+            return "Indigo"
+        case .cyan:
+            return "Cyan"
+        case .lime:
+            return "Lime"
+        case .brown:
+            return "Brown"
         }
     }
 
@@ -64,6 +77,14 @@ enum TerminalTabColor: Int, CaseIterable, Codable {
             }
         case .graphite:
             return .systemGray
+        case .indigo:
+            return .systemIndigo
+        case .cyan:
+            return .systemCyan
+        case .lime:
+            return NSColor(srgbRed: 0.55, green: 0.80, blue: 0.20, alpha: 1)
+        case .brown:
+            return .systemBrown
         }
     }
 
@@ -146,6 +167,7 @@ struct TabColorMenuView: View {
     static let paletteRows: [[TerminalTabColor]] = [
         [.none, .blue, .purple, .pink, .red],
         [.orange, .yellow, .green, .teal, .graphite],
+        [.lime, .cyan, .indigo, .brown],  // Wisp
     ]
 
     /// Leading padding to align with the menu's icon gutter.

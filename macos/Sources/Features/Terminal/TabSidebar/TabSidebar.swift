@@ -1834,19 +1834,7 @@ private struct TabSidebarContextMenu: View {
                 .disabled(!tab.isPinned && workspace.id == tab.workspaceID)
             }
         }
-        Menu("Tab Color") {
-            ForEach(TerminalTabColor.allCases, id: \.self) { color in
-                // A swatch next to each name, ringed on the tab's current color.
-                Button { model.setColor(color, for: tab.id) } label: {
-                    Label {
-                        Text(color.localizedName)
-                    } icon: {
-                        Image(nsImage: color.swatchImage(selected: color == tab.color))
-                    }
-                }
-                .labelStyle(.titleAndIcon)
-            }
-        }
+        TabColorMenu(tab: tab, model: model)
         Divider()
         if !tab.isPinned {
             TabGroupMenu(tab: tab, model: model)

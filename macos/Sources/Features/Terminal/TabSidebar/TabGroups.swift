@@ -177,7 +177,7 @@ struct TabGroupEditor: View {
     @State private var name = ""
     @FocusState private var nameFocused: Bool
 
-    private static let colors = TerminalTabColor.allCases.filter { $0 != .none }
+    private static let colors = TerminalTabColor.ordered
 
     var body: some View {
         let group = store.group(groupID)
@@ -193,7 +193,7 @@ struct TabGroupEditor: View {
                 }
                 .onSubmit { model.endEditingGroup() }
 
-            HStack(spacing: 6) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(24), spacing: 6), count: 7), alignment: .leading, spacing: 6) {
                 ForEach(Self.colors, id: \.self) { color in
                     let selected = group?.color == color
                     Circle()
