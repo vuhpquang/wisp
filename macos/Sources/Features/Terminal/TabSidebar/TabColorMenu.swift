@@ -37,34 +37,43 @@ extension TerminalTabColor {
 
 /// "Tab Color" in a tab's menu: None, then each color with its swatch, checked on the
 /// tab's current color.
+///
+/// SwiftUI drops the icon of a Button, Toggle or Menu label when it turns them into
+/// menu items. An inline Picker keeps its items' icons, and an image inside a Text
+/// survives in a label, so those carry the swatches.
 struct TabColorMenu: View {
     let tab: TabSidebarModel.Tab
     let model: TabSidebarModel
 
     var body: some View {
         Menu {
-            item(.none)
-            Divider()
-            ForEach(TerminalTabColor.ordered, id: \.self) { item($0) }
+            Picker(selection: Binding(
+                get: { tab.color },
+                set: { model.setColor($0, for: tab.id) }
+            )) {
+                item(.none)
+                Divider()
+                ForEach(TerminalTabColor.ordered, id: \.self) { item($0) }
+            } label: {
+                EmptyView()
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
         } label: {
-            Label {
+            if tab.color == .none {
                 Text("Tab Color")
-            } icon: {
-                Image(nsImage: tab.color.menuSwatch)
+            } else {
+                Text(Image(nsImage: tab.color.menuSwatch)) + Text("  Tab Color")
             }
         }
     }
 
     private func item(_ color: TerminalTabColor) -> some View {
-        Toggle(isOn: Binding(
-            get: { tab.color == color },
-            set: { _ in model.setColor(color, for: tab.id) }
-        )) {
-            Label {
-                Text(color.localizedName)
-            } icon: {
-                Image(nsImage: color.menuSwatch)
-            }
+        Label {
+            Text(color.localizedName)
+        } icon: {
+            Image(nsImage: color.menuSwatch)
         }
+        .tag(color)
     }
 }
