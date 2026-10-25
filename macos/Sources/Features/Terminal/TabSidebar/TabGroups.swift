@@ -58,54 +58,60 @@ final class TabGroupStore: ObservableObject {
 
 // MARK: - Views
 
+/// How group labels look: Firefox's drop (rounded but for the corner the
+/// group's tabs hang from) in a light color with dark text, or a solid pill
+/// with white text.
+enum TabGroupLabelStyle: String, CaseIterable {
+    case firefox
+    case solid
+
+    var title: String {
+        switch self {
+        case .firefox: "Light (Firefox)"
+        case .solid: "Solid"
+        }
+    }
+}
+
 /// A group's label: a pill in the group's color. Clicking it collapses or
-/// expands the group.
+/// expands the group; it can be dragged to move the whole group, and tabs
+/// dropped on it join the group.
 struct TabGroupLabel: View {
     let group: TabGroup
     let count: Int
     let model: TabSidebarModel
+    @ObservedObject private var state = TabSidebarState.shared
     @State private var isHovering = false
+
+    private var color: NSColor { group.color.displayColor ?? .systemGray }
 
     var body: some View {
         HStack(spacing: 6) {
-            HStack(spacing: 4) {
-                Text(group.name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                if group.isCollapsed {
-                    Text("\(count)")
-                        .font(.system(size: 10, weight: .bold))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.white.opacity(0.25)))
-                }
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(Color(nsColor: group.color.displayColor ?? .systemGray)))
+            pill
 
             Spacer(minLength: 0)
 
-            if isHovering {
-                Image(systemName: group.isCollapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.tertiary)
-            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(group.isCollapsed ? 0 : 90))
+                .opacity(isHovering ? 1 : 0)
         }
         .padding(.horizontal, 4)
-        .frame(height: 30)
+        .frame(height: state.groupLabelStyle == .firefox ? 36 : 30)
+
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { model.toggleCollapsed(group.id) }
         .help(group.isCollapsed ? "Show tabs" : "Hide tabs")
+        .popover(isPresented: Binding(
+            get: { model.editingGroup?.id == group.id },
+            set: { if !$0 { model.endEditingGroup() } }
+        ), arrowEdge: .trailing) {
+            TabGroupEditor(groupID: group.id, isNew: model.editingGroup?.isNew ?? false, model: model)
+        }
         .contextMenu {
-            Button("Rename Group…") { model.promptRenameGroup(group) }
-            Menu("Color") {
-                ForEach(TerminalTabColor.allCases.filter { $0 != .none }, id: \.self) { color in
-                    Button(color.localizedName) { TabGroupStore.shared.update(group.id) { $0.color = color } }
-                }
-            }
+            Button("Edit Group…") { model.editGroup(group.id) }
             Button(group.isCollapsed ? "Expand Group" : "Collapse Group") { model.toggleCollapsed(group.id) }
             Divider()
             Button("New Tab in Group") { model.newTab(inGroup: group.id) }
@@ -113,6 +119,130 @@ struct TabGroupLabel: View {
             Button("Ungroup Tabs") { model.ungroup(group.id) }
             Button("Close Group") { model.closeGroup(group.id) }
         }
+    }
+
+    @ViewBuilder
+    private var pill: some View {
+        if state.groupLabelStyle == .firefox {
+            Text(group.name)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(Color.black.opacity(0.85))
+                .padding(.horizontal, 12)
+                .frame(minWidth: 30, minHeight: 28)
+                .background(
+                    UnevenRoundedRectangle(cornerRadii: .init(topLeading: 14, bottomLeading: 3, bottomTrailing: 14, topTrailing: 14))
+                        .fill(Color(nsColor: Self.light(color))))
+        } else {
+            solidPill
+        }
+    }
+
+    private var solidPill: some View {
+        HStack(spacing: 4) {
+            if !group.name.isEmpty {
+                Text(group.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            if group.isCollapsed {
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.white.opacity(0.25)))
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .frame(minWidth: 26, minHeight: 22)
+        .background(Capsule().fill(Color(nsColor: color)))
+    }
+
+    /// Firefox's label color: the group color lightened toward white.
+    static func light(_ color: NSColor) -> NSColor {
+        color.usingColorSpace(.sRGB)?.blended(withFraction: 0.25, of: .white) ?? color
+    }
+}
+
+/// Firefox's group panel: the name, a row of colors and the group's actions.
+/// It opens on a new group (Done keeps it, Cancel ungroups the tab again) and
+/// from "Edit Group…".
+struct TabGroupEditor: View {
+    let groupID: UUID
+    let isNew: Bool
+    let model: TabSidebarModel
+    @ObservedObject private var store = TabGroupStore.shared
+    @State private var name = ""
+    @FocusState private var nameFocused: Bool
+
+    private static let colors = TerminalTabColor.allCases.filter { $0 != .none }
+
+    var body: some View {
+        let group = store.group(groupID)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(isNew ? "Create Tab Group" : "Manage Tab Group")
+                .font(.system(size: 13, weight: .semibold))
+
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .focused($nameFocused)
+                .onChange(of: name) { newName in
+                    store.update(groupID) { $0.name = newName.trimmingCharacters(in: .whitespaces) }
+                }
+                .onSubmit { model.endEditingGroup() }
+
+            HStack(spacing: 6) {
+                ForEach(Self.colors, id: \.self) { color in
+                    let selected = group?.color == color
+                    Circle()
+                        .fill(Color(nsColor: color.displayColor ?? .systemGray))
+                        .frame(width: 18, height: 18)
+                        .padding(3)
+                        .overlay(Circle().strokeBorder(Color.primary.opacity(selected ? 0.7 : 0), lineWidth: 2))
+                        .contentShape(Circle())
+                        .onTapGesture { store.update(groupID) { $0.color = color } }
+                        .help(color.localizedName)
+                }
+            }
+
+            if isNew {
+                HStack {
+                    Spacer()
+                    Button("Cancel") { model.cancelNewGroup(groupID) }
+                    Button("Done") { model.endEditingGroup() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            } else {
+                Divider()
+                VStack(alignment: .leading, spacing: 2) {
+                    action("New Tab in Group", "plus") { model.newTab(inGroup: groupID) }
+                    action("Ungroup Tabs", "rectangle.stack.badge.minus") { model.ungroup(groupID) }
+                    action("Close Group", "xmark.rectangle") { model.closeGroup(groupID) }
+                }
+            }
+        }
+        .padding(14)
+        // Wide enough for the row of colors: 9 × 24pt, 6pt apart, plus padding.
+        .frame(width: 300)
+        .onAppear {
+            name = group?.name ?? ""
+            DispatchQueue.main.async { nameFocused = true }
+        }
+    }
+
+    private func action(_ title: String, _ icon: String, perform: @escaping () -> Void) -> some View {
+        Button {
+            model.endEditingGroup()
+            perform()
+        } label: {
+            Label(title, systemImage: icon)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -128,7 +258,7 @@ struct TabGroupMenu: View {
             let others = model.visibleGroups.filter { $0.id != tab.groupID }
             if !others.isEmpty { Divider() }
             ForEach(others) { group in
-                Button(group.name) { model.addTab(tab.id, toGroup: group.id) }
+                Button(group.name.isEmpty ? "Unnamed Group" : group.name) { model.addTab(tab.id, toGroup: group.id) }
             }
         }
         if tab.groupID != nil {

@@ -11,6 +11,11 @@ struct SleepingTab: Codable, Identifiable, Equatable {
     var workspaceID: UUID
     var tab: TabLayout.Tab
     var sleptAt = Date()
+
+    /// The sidebar group it was in and its place among the window's tabs, so
+    /// it opens again where it was. Missing in tabs unloaded by older versions.
+    var groupID: UUID?
+    var position: Int?
 }
 
 /// Sleeping tabs and the automatic unloading of idle tabs.
@@ -95,19 +100,24 @@ final class TabSleepStore: ObservableObject {
             title: window.title.isEmpty ? "👻" : window.title,
             directory: directory,
             workspaceID: TabWorkspaceStore.shared.workspaceID(of: window),
-            tab: tab))
+            tab: tab,
+            groupID: (window as? TerminalWindow)?.tabGroupID,
+            position: window.tabGroup?.windows.firstIndex(of: window)))
         controller.closeTab(nil)
     }
 
-    /// Open a sleeping tab again next to `parent` and select it.
-    func wake(_ id: SleepingTab.ID, from parent: NSWindow) {
+    /// Open a sleeping tab again next to `parent` and select it. The sidebar
+    /// then puts it back in its place (`TabSidebarModel.wake`).
+    @discardableResult
+    func wake(_ id: SleepingTab.ID, from parent: NSWindow) -> TerminalController? {
         guard let sleeping = tabs.first(where: { $0.id == id }),
-              let ghostty = (parent.windowController as? BaseTerminalController)?.ghostty else { return }
+              let ghostty = (parent.windowController as? BaseTerminalController)?.ghostty else { return nil }
 
         TabWorkspaceStore.shared.activate(sleeping.workspaceID)
         tabs.removeAll { $0.id == id }
-        guard let controller = TabSidebarModel.openTab(sleeping.tab, from: parent, ghostty: ghostty) else { return }
+        guard let controller = TabSidebarModel.openTab(sleeping.tab, from: parent, ghostty: ghostty) else { return nil }
         (controller.window as? TerminalWindow)?.workspaceID = sleeping.workspaceID
+        return controller
     }
 
     func remove(_ id: SleepingTab.ID) {

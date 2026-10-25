@@ -26,6 +26,7 @@ final class TabSidebarState: ObservableObject {
     private static let pinnedKey = "TabSidebarPinned"
     private static let detailsKey = "TabSidebarShowsDetails"
     private static let previewKey = "TabSidebarShowsPreview"
+    private static let groupStyleKey = "TabSidebarGroupLabelStyle"
 
     /// Show each tab's folder, git branch and command time under its title.
     @Published var showsDetails: Bool {
@@ -35,6 +36,11 @@ final class TabSidebarState: ObservableObject {
     /// Show a tab's visible text when hovering it.
     @Published var showsPreview: Bool {
         didSet { UserDefaults.ghostty.set(showsPreview, forKey: Self.previewKey) }
+    }
+
+    /// How tab group labels look.
+    @Published var groupLabelStyle: TabGroupLabelStyle {
+        didSet { UserDefaults.ghostty.set(groupLabelStyle.rawValue, forKey: Self.groupStyleKey) }
     }
     private static let widthKey = "TabSidebarWidth"
 
@@ -66,6 +72,8 @@ final class TabSidebarState: ObservableObject {
         isPinned = UserDefaults.ghostty.object(forKey: Self.pinnedKey) as? Bool ?? true
         showsDetails = UserDefaults.ghostty.object(forKey: Self.detailsKey) as? Bool ?? true
         showsPreview = UserDefaults.ghostty.object(forKey: Self.previewKey) as? Bool ?? true
+        groupLabelStyle = UserDefaults.ghostty.string(forKey: Self.groupStyleKey)
+            .flatMap(TabGroupLabelStyle.init(rawValue:)) ?? .firefox
         let savedWidth = (UserDefaults.ghostty.object(forKey: Self.widthKey) as? Double).map { CGFloat($0) }
         width = Self.clampWidth(savedWidth ?? Self.defaultWidth)
 
@@ -271,8 +279,13 @@ final class TabSidebarModel: ObservableObject {
         store.$workspaces.dropFirst()
             .sink { [weak self] _ in self?.scheduleReload(after: 0) }
             .store(in: &cancellables)
+        // Collapsing, renaming or recoloring a group changes no tab, so the
+        // reload alone publishes nothing: redraw explicitly.
         TabGroupStore.shared.$groups.dropFirst()
-            .sink { [weak self] _ in self?.scheduleReload(after: 0) }
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+                self?.scheduleReload(after: 0)
+            }
             .store(in: &cancellables)
 
         TabSidebarState.shared.installMouseMonitorIfNeeded()
@@ -486,7 +499,9 @@ final class TabSidebarModel: ObservableObject {
     }
 
     func toggleCollapsed(_ groupID: UUID) {
-        TabGroupStore.shared.update(groupID) { $0.isCollapsed.toggle() }
+        withAnimation(.easeInOut(duration: 0.22)) {
+            TabGroupStore.shared.update(groupID) { $0.isCollapsed.toggle() }
+        }
     }
 
     /// Put a tab in a group (nil removes it from its group). It moves next to
@@ -499,17 +514,35 @@ final class TabSidebarModel: ObservableObject {
         if let previous { deleteGroupIfEmpty(previous) }
     }
 
-    func promptNewGroup(with tabID: Tab.ID) {
-        promptGroupName(title: "New Tab Group", name: "") { [weak self] name in
-            let group = TabGroupStore.shared.create(name: name)
-            self?.addTab(tabID, toGroup: group.id)
-        }
+    /// The group whose panel is open, and whether it was just created.
+    struct EditingGroup: Equatable {
+        let id: UUID
+        let isNew: Bool
     }
 
-    func promptRenameGroup(_ group: TabGroup) {
-        promptGroupName(title: "Rename Tab Group", name: group.name) { name in
-            TabGroupStore.shared.update(group.id) { $0.name = name }
-        }
+    @Published private(set) var editingGroup: EditingGroup?
+
+    /// Like Firefox: the tab joins a new group right away and the group's panel
+    /// opens to name it and pick a color.
+    func promptNewGroup(with tabID: Tab.ID) {
+        let group = TabGroupStore.shared.create(name: "")
+        addTab(tabID, toGroup: group.id)
+        // Let the label appear before the panel anchors to it.
+        DispatchQueue.main.async { [weak self] in self?.editingGroup = EditingGroup(id: group.id, isNew: true) }
+    }
+
+    func editGroup(_ groupID: UUID) {
+        editingGroup = EditingGroup(id: groupID, isNew: false)
+    }
+
+    func endEditingGroup() {
+        editingGroup = nil
+    }
+
+    /// Cancel on a new group's panel: the tab leaves it and the group goes away.
+    func cancelNewGroup(_ groupID: UUID) {
+        editingGroup = nil
+        ungroup(groupID)
     }
 
     /// Keep the tabs, forget the group.
@@ -549,25 +582,6 @@ final class TabSidebarModel: ObservableObject {
         if members(of: groupID).isEmpty { TabGroupStore.shared.delete(groupID) }
     }
 
-    private func promptGroupName(title: String, name: String, completion: @escaping (String) -> Void) {
-        guard let window else { return }
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = name
-        field.placeholderString = "Group name"
-
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.accessoryView = field
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        alert.beginSheetModal(for: window) { response in
-            let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard response == .alertFirstButtonReturn, !name.isEmpty else { return }
-            completion(name)
-        }
-    }
-
     // MARK: Sleeping tabs
 
     /// Unloaded tabs of the active workspace.
@@ -589,9 +603,34 @@ final class TabSidebarModel: ObservableObject {
         }
     }
 
+    /// Open a sleeping tab where it was: back in its group if that still has
+    /// tabs, at its old position.
     func wake(_ id: SleepingTab.ID) {
-        guard let window else { return }
-        TabSleepStore.shared.wake(id, from: window)
+        guard let window,
+              let sleeping = TabSleepStore.shared.tabs.first(where: { $0.id == id }),
+              let woken = TabSleepStore.shared.wake(id, from: window)?.window as? TerminalWindow else { return }
+
+        if let groupID = sleeping.groupID, !members(of: groupID).isEmpty {
+            woken.tabGroupID = groupID
+        }
+
+        let others = tabWindows.filter { $0 !== woken }
+        if let position = sleeping.position, !others.isEmpty {
+            if position < others.count {
+                reorder(woken, relativeTo: others[position], ordered: .below)
+            } else if let last = others.last {
+                reorder(woken, relativeTo: last, ordered: .above)
+            }
+        }
+
+        // Its old neighbors may have moved; it must at least sit with its group.
+        if let groupID = woken.tabGroupID {
+            let windows = tabWindows
+            if let index = windows.firstIndex(of: woken),
+               ![index - 1, index + 1].contains(where: { windows.indices.contains($0) && (windows[$0] as? TerminalWindow)?.tabGroupID == groupID }) {
+                moveNextToGroup(woken, groupID: groupID)
+            }
+        }
     }
 
     // MARK: Attention
@@ -728,8 +767,18 @@ final class TabSidebarModel: ObservableObject {
         guard let parent = window,
               let ghostty = (parent.windowController as? BaseTerminalController)?.ghostty else { return }
 
+        // Each tab opens after the previous one: opening them all from `parent`
+        // would list them in reverse. The first tab is selected at the end.
+        var anchor = parent
+        var first: NSWindow?
         for tab in layout.tabs.isEmpty ? [TabLayout.Tab()] : layout.tabs {
-            Self.openTab(tab, from: parent, ghostty: ghostty)
+            guard let opened = Self.openTab(tab, from: anchor, ghostty: ghostty)?.window else { continue }
+            first = first ?? opened
+            anchor = opened
+        }
+        if let first {
+            first.tabGroup?.selectedWindow = first
+            first.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -812,6 +861,168 @@ final class TabSidebarModel: ObservableObject {
         } else if let first = others.first {
             reorder(source, relativeTo: first, ordered: .below)
         }
+    }
+
+    // MARK: Dragging
+
+    /// What is being dragged in the sidebar: a tab, or a group by its label.
+    enum DragItem: Equatable {
+        case tab(Tab.ID)
+        case group(UUID)
+    }
+
+    /// Where it is dropped. The sidebar draws a line there while dragging.
+    enum DropTarget: Equatable {
+        /// Above or below a tab in the list (its upper or lower half). The tab
+        /// joins that tab's group, or leaves its own if that tab has none.
+        case beforeTab(Tab.ID)
+        case afterTab(Tab.ID)
+        /// On a pinned tile: take its place.
+        case tile(Tab.ID)
+        /// Into a group, first: the lower part of its label.
+        case group(UUID)
+        /// Just above a group, outside it: the upper part of its label.
+        case beforeGroup(UUID)
+        /// First in the list (the workspace's name) or last (below the list).
+        case start
+        case end
+    }
+
+    func drop(_ item: DragItem, on target: DropTarget) {
+        switch item {
+        case .tab(let id): dropTab(id, on: target)
+        case .group(let groupID): moveGroup(groupID, to: target)
+        }
+    }
+
+    /// The group a tab dropped on `target` ends up in; the sidebar colors the
+    /// drop line with it.
+    func groupAfterDrop(on target: DropTarget) -> UUID? {
+        switch target {
+        case .beforeTab(let id), .afterTab(let id):
+            guard let window = window(for: id) as? TerminalWindow, !window.isTabPinned else { return nil }
+            return TabGroupStore.shared.group(window.tabGroupID)?.id
+        case .group(let groupID):
+            return groupID
+        case .tile, .beforeGroup, .start, .end:
+            return nil
+        }
+    }
+
+    /// Like Firefox: a tab dropped among a group's tabs or on its label joins
+    /// the group; dropped among ungrouped tabs, above a group, at the top or
+    /// below the list, it leaves it.
+    private func dropTab(_ id: Tab.ID, on target: DropTarget) {
+        guard let source = window(for: id) as? TerminalWindow else { return }
+        let previous = source.tabGroupID
+
+        switch target {
+        case .beforeTab(let targetID), .afterTab(let targetID):
+            guard let neighbor = window(for: targetID) as? TerminalWindow,
+                  source.isTabPinned == neighbor.isTabPinned else { return }
+            if !source.isTabPinned { source.tabGroupID = groupAfterDrop(on: target) }
+            if source !== neighbor {
+                reorder(source, relativeTo: neighbor, ordered: target == .afterTab(targetID) ? .above : .below)
+            }
+
+        case .tile(let targetID):
+            move(id, to: targetID)
+
+        case .group(let groupID):
+            guard !source.isTabPinned else { return }
+            source.tabGroupID = groupID
+            if let first = members(of: groupID).first(where: { $0 !== source }) {
+                reorder(source, relativeTo: first, ordered: .below)
+            }
+
+        case .beforeGroup(let groupID):
+            guard !source.isTabPinned else { return }
+            source.tabGroupID = nil
+            if let first = members(of: groupID).first(where: { $0 !== source }) {
+                reorder(source, relativeTo: first, ordered: .below)
+            }
+
+        case .start:
+            guard !source.isTabPinned else { return }
+            source.tabGroupID = nil
+            if let first = firstWorkspaceWindow(excluding: [source]) {
+                reorder(source, relativeTo: first, ordered: .below)
+            }
+
+        case .end:
+            guard !source.isTabPinned else { return }
+            source.tabGroupID = nil
+            if let last = lastWorkspaceWindow(excluding: [source]) {
+                reorder(source, relativeTo: last, ordered: .above)
+            }
+        }
+
+        if let previous, previous != source.tabGroupID { deleteGroupIfEmpty(previous) }
+    }
+
+    /// Move all of a group's tabs, in order, before or after the tab or group
+    /// they are dropped on. Groups never end up inside other groups: next to a
+    /// grouped tab, they go before or after its whole group.
+    private func moveGroup(_ groupID: UUID, to target: DropTarget) {
+        let moving = members(of: groupID)
+        guard !moving.isEmpty else { return }
+
+        let block: [NSWindow]
+        let after: Bool
+        switch target {
+        case .beforeTab(let targetID), .afterTab(let targetID):
+            guard let window = window(for: targetID) as? TerminalWindow,
+                  !window.isTabPinned, window.tabGroupID != groupID else { return }
+            if let other = TabGroupStore.shared.group(window.tabGroupID)?.id {
+                block = members(of: other)
+            } else {
+                block = [window]
+            }
+            after = target == .afterTab(targetID)
+        case .group(let other), .beforeGroup(let other):
+            guard other != groupID else { return }
+            block = members(of: other)
+            after = false
+        case .start:
+            guard let first = firstWorkspaceWindow(excluding: moving) else { return }
+            block = [first]
+            after = false
+        case .end:
+            guard let last = lastWorkspaceWindow(excluding: moving) else { return }
+            block = [last]
+            after = true
+        case .tile:
+            return
+        }
+        guard let blockFirst = block.first, let blockLast = block.last else { return }
+
+        if after {
+            var previous = blockLast
+            for window in moving {
+                reorder(window, relativeTo: previous, ordered: .above)
+                previous = window
+            }
+        } else {
+            for window in moving { reorder(window, relativeTo: blockFirst, ordered: .below) }
+        }
+    }
+
+    /// The unpinned tabs of the active workspace, minus `excluded`.
+    private func workspaceWindows(excluding excluded: [NSWindow]) -> [NSWindow] {
+        let active = TabWorkspaceStore.shared.activeID
+        return tabWindows.filter { window in
+            !excluded.contains(window)
+                && (window as? TerminalWindow)?.isTabPinned != true
+                && TabWorkspaceStore.shared.workspaceID(of: window) == active
+        }
+    }
+
+    private func firstWorkspaceWindow(excluding excluded: [NSWindow]) -> NSWindow? {
+        workspaceWindows(excluding: excluded).first
+    }
+
+    private func lastWorkspaceWindow(excluding excluded: [NSWindow]) -> NSWindow? {
+        workspaceWindows(excluding: excluded).last
     }
 
     /// Move the tab `id` to the position currently held by `targetID`. Tabs only
@@ -938,7 +1149,8 @@ struct TabSidebarView: View {
     @ObservedObject var model: TabSidebarModel
     @ObservedObject private var store = TabWorkspaceStore.shared
     @ObservedObject private var sleepStore = TabSleepStore.shared
-    @State private var draggingID: TabSidebarModel.Tab.ID?
+    @State private var dragging: TabSidebarModel.DragItem?
+    @State private var dropTarget: TabSidebarModel.DropTarget?
     @State private var query = ""
 
     var body: some View {
@@ -970,7 +1182,8 @@ struct TabSidebarView: View {
                     if !model.pinnedTabs.isEmpty {
                         LazyVGrid(columns: Self.pinnedColumns, spacing: 6) {
                             ForEach(model.pinnedTabs) { tab in
-                                reorderable(TabSidebarTile(tab: tab, model: model), id: tab.id)
+                                draggable(TabSidebarTile(tab: tab, model: model), id: tab.id)
+                                    .onDrop(of: [.text], delegate: dropDelegate(.tile(tab.id)))
                             }
                         }
 
@@ -1010,20 +1223,47 @@ struct TabSidebarView: View {
                     .padding(.horizontal, 10)
                     .padding(.top, 2)
                     .contextMenu { TabWorkspaceMenu(workspace: store.active, model: model) }
+                    // Dropping on the workspace's name puts a tab first, outside any group.
+                    .overlay(alignment: .bottom) { dropLine(.start, edge: .bottom) }
+                    .onDrop(of: [.text], delegate: dropDelegate(.start))
 
                     LazyVStack(spacing: 2) {
                         ForEach(model.workspaceItems) { item in
                             switch item {
                             case .tab(let tab):
-                                reorderable(groupedRow(tab), id: tab.id)
+                                draggable(groupedRow(tab), id: tab.id)
+                                    .overlay(alignment: .top) { dropLine(.beforeTab(tab.id), edge: .top) }
+                                    .overlay(alignment: .bottom) { dropLine(.afterTab(tab.id), edge: .bottom) }
+                                    .modifier(TabSidebarDropZone(
+                                        upper: .beforeTab(tab.id), lower: .afterTab(tab.id), split: 0.5,
+                                        delegate: dropDelegate))
+                                    .transition(.opacity.combined(with: .offset(y: -6)))
                             case .group(let group, let count):
                                 TabGroupLabel(group: group, count: count, model: model)
+                                    .onDrag {
+                                        dragging = .group(group.id)
+                                        return NSItemProvider(object: group.id.uuidString as NSString)
+                                    }
+                                    .overlay(alignment: .top) { dropLine(.beforeGroup(group.id), edge: .top) }
+                                    .overlay(alignment: .bottom) { dropLine(.group(group.id), edge: .bottom) }
+                                    // The upper third of the label means "above the group".
+                                    .modifier(TabSidebarDropZone(
+                                        upper: .beforeGroup(group.id), lower: .group(group.id), split: 1 / 3,
+                                        delegate: dropDelegate))
                             }
                         }
 
                         ForEach(model.sleepingTabs) { sleeping in
                             TabSidebarSleepingRow(sleeping: sleeping, model: model)
                         }
+
+                        // Dropping below the list moves a tab out of its group
+                        // to the end, or a group to the end.
+                        Color.clear
+                            .frame(height: 36)
+                            .contentShape(Rectangle())
+                            .overlay(alignment: .top) { dropLine(.end, edge: .top) }
+                            .onDrop(of: [.text], delegate: dropDelegate(.end))
                     }
                 }
                 .padding(.horizontal, 8)
@@ -1104,16 +1344,37 @@ struct TabSidebarView: View {
         repeating: GridItem(.flexible(), spacing: 6),
         count: 3)
 
-    private func reorderable<V: View>(_ view: V, id: TabSidebarModel.Tab.ID) -> some View {
-        view
-            .onDrag {
-                draggingID = id
-                return NSItemProvider(object: "\(id.hashValue)" as NSString)
-            }
-            .onDrop(of: [.text], delegate: TabSidebarDropDelegate(
-                target: id,
-                model: model,
-                draggingID: $draggingID))
+    private func draggable<V: View>(_ view: V, id: TabSidebarModel.Tab.ID) -> some View {
+        view.onDrag {
+            dragging = .tab(id)
+            return NSItemProvider(object: "\(id.hashValue)" as NSString)
+        }
+    }
+
+    /// Where a dragged tab would land: in the group's color when it would join
+    /// a group, light gray otherwise. Groups never join one, so theirs is gray.
+    private func dropLine(_ target: TabSidebarModel.DropTarget, edge: VerticalEdge) -> some View {
+        var color = Color.secondary.opacity(0.55)
+        if case .tab = dragging,
+           let groupColor = TabGroupStore.shared.group(model.groupAfterDrop(on: target))?.color.displayColor {
+            color = Color(nsColor: groupColor)
+        }
+        return Capsule()
+            .fill(color)
+            .frame(height: 2)
+            .padding(.horizontal, 4)
+            .offset(y: edge == .top ? -2 : 2)
+            .opacity(dragging != nil && dropTarget == target ? 1 : 0)
+            .allowsHitTesting(false)
+    }
+
+    private func dropDelegate(
+        _ target: TabSidebarModel.DropTarget,
+        _ resolve: ((CGPoint) -> TabSidebarModel.DropTarget)? = nil
+    ) -> TabSidebarDropDelegate {
+        TabSidebarDropDelegate(
+            target: target, resolve: resolve, model: model,
+            dragging: $dragging, dropTarget: $dropTarget)
     }
 }
 
@@ -1483,6 +1744,9 @@ private struct TabSidebarBackgroundMenu: View {
 
         Toggle("Show Folder, Branch and Command Time", isOn: $state.showsDetails)
         Toggle("Preview Tabs on Hover", isOn: $state.showsPreview)
+        Picker("Group Labels", selection: $state.groupLabelStyle) {
+            ForEach(TabGroupLabelStyle.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
         Picker("Unload Idle Tabs", selection: $sleep.autoUnloadMinutes) {
             ForEach(TabSleepStore.autoUnloadChoices, id: \.self) { minutes in
                 Text(minutes == 0 ? "Manually" : minutes < 60 ? "After \(minutes) Minutes" : "After \(minutes / 60) Hour\(minutes == 60 ? "" : "s")")
@@ -1748,19 +2012,66 @@ private struct TabSidebarRow: View {
     }
 }
 
+/// A drop area that means one thing in its upper part and another below
+/// (above/below a tab, above/into a group).
+private struct TabSidebarDropZone: ViewModifier {
+    let upper: TabSidebarModel.DropTarget
+    let lower: TabSidebarModel.DropTarget
+    /// The fraction of the height that counts as upper.
+    let split: CGFloat
+    let delegate: (TabSidebarModel.DropTarget, ((CGPoint) -> TabSidebarModel.DropTarget)?) -> TabSidebarDropDelegate
+    @State private var height: CGFloat = 30
+
+    func body(content: Content) -> some View {
+        let boundary = height * split
+        let upper = upper
+        let lower = lower
+        return content
+            .background(GeometryReader { geometry in
+                Color.clear
+                    .onAppear { height = geometry.size.height }
+                    .onChange(of: geometry.size.height) { height = $0 }
+            })
+            .onDrop(of: [.text], delegate: delegate(lower) { $0.y < boundary ? upper : lower })
+    }
+}
+
 private struct TabSidebarDropDelegate: DropDelegate {
-    let target: TabSidebarModel.Tab.ID
+    let target: TabSidebarModel.DropTarget
+    /// For views that mean different things depending on where the pointer is.
+    let resolve: ((CGPoint) -> TabSidebarModel.DropTarget)?
     let model: TabSidebarModel
-    @Binding var draggingID: TabSidebarModel.Tab.ID?
+    @Binding var dragging: TabSidebarModel.DragItem?
+    @Binding var dropTarget: TabSidebarModel.DropTarget?
+
+    private func target(at info: DropInfo) -> TabSidebarModel.DropTarget {
+        resolve?(info.location) ?? target
+    }
+
+    // Updates can still arrive after the drop; once `dragging` is cleared
+    // they are ignored so the line doesn't come back.
+    func dropEntered(info: DropInfo) {
+        if dragging != nil { dropTarget = target(at: info) }
+    }
+
+    func dropExited(info: DropInfo) {
+        if let current = dropTarget, current == target(at: info) || current == target || current == resolve?(.zero) {
+            dropTarget = nil
+        }
+    }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        if dragging != nil { dropTarget = target(at: info) }
+        return DropProposal(operation: .move)
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let draggingID else { return false }
-        model.move(draggingID, to: target)
-        self.draggingID = nil
+        let target = target(at: info)
+        let item = dragging
+        dragging = nil
+        dropTarget = nil
+        guard let item else { return false }
+        model.drop(item, on: target)
         return true
     }
 }

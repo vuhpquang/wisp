@@ -366,12 +366,25 @@ struct WispSettingsView: View {
                 key: "macos-vertical-tabs", title: "Vertical tab sidebar", defaultValue: true,
                 note: "Also in the tab menu. ⌘E pins or collapses the sidebar.")
             UnloadTabsPicker()
+            GroupLabelStylePicker()
             SettingPicker(key: "notify-on-command-finish", title: "Notify when a command finishes", options: ["never", "unfocused", "always"])
             SettingPicker(
                 key: "notify-on-command-finish-action", title: "Notify by",
                 options: ["bell", "notify", "bell,notify"])
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The look of tab group labels in the sidebar, a Wisp preference like the
+/// one below.
+private struct GroupLabelStylePicker: View {
+    @ObservedObject private var state = TabSidebarState.shared
+
+    var body: some View {
+        Picker("Group labels", selection: $state.groupLabelStyle) {
+            ForEach(TabGroupLabelStyle.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
     }
 }
 
