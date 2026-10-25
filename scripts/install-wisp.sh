@@ -30,7 +30,8 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 cd "$(dirname "$0")/.."
 source_dir="$(pwd)"
 
-dest="/Applications/Wisp.app"
+# WISP_DEST builds somewhere else, e.g. for packaging a release.
+dest="${WISP_DEST:-/Applications/Wisp.app}"
 built="macos/build/ReleaseLocal/Ghostty.app"
 
 if $pull; then
@@ -69,6 +70,11 @@ cp -R "$built" "$dest"
 # in-app updater find new commits and rebuild. Then sign the app again.
 plist="$dest/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Wisp" "$plist"
+# The version is the first one in CHANGELOG.md, which the app also shows
+# after an update.
+version="$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$plist"
+cp CHANGELOG.md "$dest/Contents/Resources/CHANGELOG.md"
 /usr/libexec/PlistBuddy -c "Add :WispCommit string $(git rev-parse HEAD)" "$plist"
 /usr/libexec/PlistBuddy -c "Add :WispSourcePath string $source_dir" "$plist"
 

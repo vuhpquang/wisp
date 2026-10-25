@@ -116,9 +116,13 @@ final class WispUpdater: ObservableObject {
             }
 
             DispatchQueue.main.async {
-                self.state = status == 0
-                    ? .readyToRestart
-                    : .failed("The update failed. See the log for details.")
+                if status == 0 {
+                    // The new version shows what's new on its first launch.
+                    UserDefaults.ghostty.set(WispChangelog.currentVersion, forKey: WispChangelog.updatedFromKey)
+                    self.state = .readyToRestart
+                } else {
+                    self.state = .failed("The update failed. See the log for details.")
+                }
             }
         }
     }

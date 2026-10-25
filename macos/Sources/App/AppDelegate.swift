@@ -232,6 +232,7 @@ class AppDelegate: NSObject,
         // Wisp is built from source, so Sparkle must never run: it would replace
         // the app with upstream Ghostty. Wisp updates from its checkout instead.
         WispUpdater.shared.start()
+        WispChangelog.showIfUpdated()
         installAgentMonitorMenuItem()
 
         // Register our service provider. This must happen after everything is initialized.
