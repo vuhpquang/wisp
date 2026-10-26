@@ -4,6 +4,18 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.2.1 - 2026-10-26
+
+### Select several tabs
+- Shift-click a tab to select every tab from the current one to it; Cmd-click adds or removes a
+  single tab. The tab you're looking at stays the same.
+- Right-click a selected tab to act on all of them: pin, move to a workspace, set a color, put
+  them in a new or existing group, take them out of their group, unload or close them.
+- Drag a selected tab to move all of them together.
+
+### Tab colors
+- More colors, in rainbow order, with a swatch next to each one in the Tab Color menu.
+
 ## 0.2.0 - 2026-10-25
 
 ### Tab groups, like Firefox
