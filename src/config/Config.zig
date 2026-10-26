@@ -7202,6 +7202,18 @@ pub const Keybinds = struct {
                 .goto_attention_tab,
                 .{ .performable = true },
             );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = 'p' }, .mods = .{ .super = true } },
+                .toggle_tab_switcher,
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{ .key = .{ .unicode = 'l' }, .mods = .{ .super = true } },
+                .focus_tab_search,
+                .{ .performable = true },
+            );
 
             // Semantic prompts
             try self.set.put(

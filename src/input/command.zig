@@ -459,6 +459,18 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Go to the next tab that rang the bell or finished a long command."),
         }},
 
+        .toggle_tab_switcher => comptime &.{.{
+            .action = .toggle_tab_switcher,
+            .title = i18n.N_("Go to Tab…"),
+            .description = i18n.N_("Pick a tab from any workspace, most recently used first."),
+        }},
+
+        .focus_tab_search => comptime &.{.{
+            .action = .focus_tab_search,
+            .title = i18n.N_("Search Tabs"),
+            .description = i18n.N_("Focus the search field of the tab sidebar."),
+        }},
+
         .toggle_tab_sidebar => comptime &.{.{
             .action = .toggle_tab_sidebar,
             .title = i18n.N_("Toggle Tab Sidebar"),

@@ -33,6 +33,9 @@ struct TerminalCommandPaletteView: View {
     /// The callback when an action is submitted.
     var onAction: ((String) -> Void)
 
+    // Wisp: ⌘P shows the tab switcher in this palette instead of commands.
+    @ObservedObject private var tabSwitcher = TabSwitcher.shared
+
     var body: some View {
         ZStack {
             if isPresented {
@@ -43,12 +46,23 @@ struct TerminalCommandPaletteView: View {
                         ResponderChainInjector(responder: surfaceView)
                             .frame(width: 0, height: 0)
 
+                        if tabSwitcher.isShowing(in: surfaceView.window) {
+                            CommandPaletteView(
+                                isPresented: $isPresented,
+                                backgroundColor: ghosttyConfig.backgroundColor,
+                                options: tabSwitcher.options(for: surfaceView.window),
+                                placeholder: "Go to a tab…",
+                                selectsFirstOption: true
+                            )
+                            .zIndex(1)
+                        } else {
                         CommandPaletteView(
                             isPresented: $isPresented,
                             backgroundColor: ghosttyConfig.backgroundColor,
                             options: commandOptions
                         )
                         .zIndex(1) // Ensure it's on top
+                        }
 
                         Spacer()
                     }
@@ -61,6 +75,8 @@ struct TerminalCommandPaletteView: View {
             // surface view we were overlaid on top of. There's probably a better way
             // to handle the first responder state here but I don't know it.
             if !newValue {
+                tabSwitcher.hide(in: surfaceView.window)
+
                 // Has to be on queue because onChange happens on a user-interactive
                 // thread and Xcode is mad about this call on that.
                 DispatchQueue.main.async {

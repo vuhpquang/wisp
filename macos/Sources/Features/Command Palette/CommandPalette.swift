@@ -61,6 +61,10 @@ struct CommandPaletteView: View {
     @Binding var isPresented: Bool
     var backgroundColor: Color = Color(nsColor: .windowBackgroundColor)
     var options: [CommandOption]
+    // Wisp: the tab switcher (⌘P) reuses this view with its own prompt and
+    // preselects the first row, the previously used tab.
+    var placeholder = "Execute a command…"
+    var selectsFirstOption = false
     @State private var rawQuery = ""
     @State private var selectedIndex: UInt?
     @State private var hoveredOptionID: UUID?
@@ -97,7 +101,7 @@ struct CommandPaletteView: View {
         }
 
         VStack(alignment: .leading, spacing: 0) {
-            CommandPaletteQuery(query: $rawQuery) { event in
+            CommandPaletteQuery(query: $rawQuery, placeholder: placeholder) { event in
                 switch event {
                 case .exit:
                     isPresented = false
@@ -170,6 +174,9 @@ struct CommandPaletteView: View {
         .shadow(radius: 32, x: 0, y: 12)
         .padding()
         .environment(\.colorScheme, scheme)
+        .onAppear {
+            if selectsFirstOption, !options.isEmpty { selectedIndex = 0 }
+        }
         .onChange(of: isPresented) { newValue in
             if !newValue {
                 // This is optional, since most of the time
@@ -185,11 +192,13 @@ struct CommandPaletteView: View {
 /// The text field for building the query for the command palette.
 private struct CommandPaletteQuery: View {
     @Binding var query: String
+    var placeholder: String
     var onEvent: ((KeyboardEvent) -> Void)?
     @FocusState private var isTextFieldFocused: Bool
 
-    init(query: Binding<String>, onEvent: ((KeyboardEvent) -> Void)? = nil) {
+    init(query: Binding<String>, placeholder: String = "Execute a command…", onEvent: ((KeyboardEvent) -> Void)? = nil) {
         _query = query
+        self.placeholder = placeholder
         self.onEvent = onEvent
     }
 
@@ -219,7 +228,7 @@ private struct CommandPaletteQuery: View {
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
 
-            TextField("Execute a command…", text: $query)
+            TextField(placeholder, text: $query)
                 .padding()
                 .font(.system(size: 20, weight: .light))
                 .frame(height: 48)

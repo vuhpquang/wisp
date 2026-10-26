@@ -4,6 +4,20 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.2.2 - 2026-10-26
+
+### Jump to tabs from the keyboard
+- ⌘P lists every tab in every workspace, most recently used first, like VS Code's Go to File.
+  Type to filter by title, workspace or folder, then press Return. Unloaded tabs are listed too
+  and open again when picked.
+- ⌘L puts the cursor in the sidebar's search field, showing a collapsed sidebar while you type.
+  Escape goes back to the terminal.
+- ⌘⇧P still opens the command palette, which now also has Go to Tab… and Search Tabs.
+
+### Tab colors
+- Show a tab's color as a filled background or as a small dot before its title: right-click
+  the sidebar and pick Tab Colors, or set it in Settings.
+
 ## 0.2.1 - 2026-10-26
 
 ### Select several tabs
@@ -15,8 +29,6 @@ take the version from the first heading.
 
 ### Tab colors
 - More colors, in rainbow order, with a swatch next to each one in the Tab Color menu.
-- Show a tab's color as a filled background or as a small dot before its title: right-click
-  the sidebar and pick Tab Colors, or set it in Settings.
 
 ## 0.2.0 - 2026-10-25
 

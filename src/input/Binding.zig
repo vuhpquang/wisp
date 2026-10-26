@@ -618,6 +618,19 @@ pub const Action = union(enum) {
     /// Only supported on macOS with `macos-vertical-tabs = true`.
     goto_attention_tab,
 
+    /// Show a list of every tab in every workspace of the vertical tab
+    /// sidebar, most recently used first, and type to pick one, like
+    /// VS Code's Go to File.
+    ///
+    /// Only supported on macOS with `macos-vertical-tabs = true`.
+    toggle_tab_switcher,
+
+    /// Move keyboard focus to the search field of the vertical tab sidebar,
+    /// revealing the sidebar if it is collapsed.
+    ///
+    /// Only supported on macOS with `macos-vertical-tabs = true`.
+    focus_tab_search,
+
     /// Change the title of the current focused surface via a pop-up prompt.
     prompt_surface_title,
 
@@ -1475,6 +1488,8 @@ pub const Action = union(enum) {
             .toggle_tab_sidebar,
             .goto_workspace,
             .goto_attention_tab,
+            .toggle_tab_switcher,
+            .focus_tab_search,
             .new_split,
             .goto_split,
             .goto_window,

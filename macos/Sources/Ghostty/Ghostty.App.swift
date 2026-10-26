@@ -712,6 +712,20 @@ extension Ghostty {
                       let model = window.tabSidebarModel else { return false }
                 return model.gotoNextAttentionTab()
 
+            case GHOSTTY_ACTION_TOGGLE_TAB_SWITCHER:
+                guard target.tag == GHOSTTY_TARGET_SURFACE,
+                      let surface = target.target.surface,
+                      let surfaceView = self.surfaceView(from: surface),
+                      let controller = surfaceView.window?.windowController as? BaseTerminalController else { return false }
+                return TabSwitcher.shared.toggle(controller)
+
+            case GHOSTTY_ACTION_FOCUS_TAB_SEARCH:
+                guard target.tag == GHOSTTY_TARGET_SURFACE,
+                      let surface = target.target.surface,
+                      let surfaceView = self.surfaceView(from: surface),
+                      let model = (surfaceView.window as? TerminalWindow)?.tabSidebarModel else { return false }
+                return model.focusSearch()
+
             case GHOSTTY_ACTION_GOTO_WORKSPACE:
                 return gotoWorkspace(app, target: target, index: Int(action.action.goto_workspace.index))
 

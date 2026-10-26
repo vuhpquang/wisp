@@ -144,8 +144,17 @@ final class TabSidebarState: ObservableObject {
         }
     }
 
+    /// Show a collapsed sidebar while its search field has focus (⌘L), even
+    /// if the mouse is away from it.
+    var keepsRevealed = false {
+        didSet {
+            guard !isPinned, keepsRevealed != oldValue else { return }
+            withAnimation(.easeOut(duration: 0.15)) { isRevealed = keepsRevealed }
+        }
+    }
+
     private func handleMouse(_ event: NSEvent) {
-        guard !isPinned else { return }
+        guard !isPinned, !keepsRevealed else { return }
         guard let window = event.window as? TerminalWindow, window.usesVerticalTabs else { return }
 
         let x = event.locationInWindow.x
@@ -709,6 +718,25 @@ final class TabSidebarModel: ObservableObject {
         }
     }
 
+    // MARK: Search
+
+    /// Bumped to move keyboard focus to the search field.
+    @Published private(set) var searchFocusRequest = 0
+
+    /// Focus the search field (⌘L). Returns false without a sidebar so the
+    /// keybinding can fall through.
+    func focusSearch() -> Bool {
+        guard (window as? TerminalWindow)?.usesVerticalTabs == true else { return false }
+        searchFocusRequest += 1
+        return true
+    }
+
+    /// Give the shown tab's terminal focus back, e.g. on Escape in the search.
+    func focusTerminal() {
+        guard let shown = tabs.first(where: \.isSelected) ?? tabs.first else { return }
+        select(shown.id)
+    }
+
     // MARK: Attention
 
     /// Select the next tab needing attention after the selected one, in any
@@ -1253,8 +1281,9 @@ struct TabSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TabSidebarSearchField(query: $query) {
+            TabSidebarSearchField(query: $query, focusRequest: model.searchFocusRequest, onCancel: model.focusTerminal) {
                 if let first = model.search(query).first {
+                    if !first.isPinned { TabWorkspaceStore.shared.activate(first.workspaceID) }
                     model.select(first.id)
                     query = ""
                 }
@@ -1480,7 +1509,10 @@ struct TabSidebarView: View {
 /// Escape clears the search.
 private struct TabSidebarSearchField: View {
     @Binding var query: String
+    let focusRequest: Int
+    let onCancel: () -> Void
     let onSubmit: () -> Void
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1488,8 +1520,19 @@ private struct TabSidebarSearchField: View {
                 .foregroundStyle(.tertiary)
             TextField("Search tabs", text: $query)
                 .textFieldStyle(.plain)
+                .focused($isFocused)
                 .onSubmit(onSubmit)
-                .onExitCommand { query = "" }
+                .onExitCommand {
+                    query = ""
+                    onCancel()
+                }
+                .onChange(of: focusRequest) { _ in
+                    TabSidebarState.shared.keepsRevealed = true
+                    DispatchQueue.main.async { isFocused = true }
+                }
+                .onChange(of: isFocused) { focused in
+                    if !focused { TabSidebarState.shared.keepsRevealed = false }
+                }
             if !query.isEmpty {
                 Button {
                     query = ""
