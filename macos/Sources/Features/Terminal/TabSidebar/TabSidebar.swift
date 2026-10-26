@@ -46,7 +46,13 @@ final class TabSidebarState: ObservableObject {
 
     /// Whether colored tabs are filled with their color or marked with a dot.
     @Published var colorStyle: TabColorStyle {
-        didSet { UserDefaults.ghostty.set(colorStyle.rawValue, forKey: Self.colorStyleKey) }
+        didSet {
+            UserDefaults.ghostty.set(colorStyle.rawValue, forKey: Self.colorStyleKey)
+            // The horizontal tab bar paints its own tint.
+            for window in NSApp.windows {
+                (window as? TerminalWindow)?.updateTabBackgroundTint()
+            }
+        }
     }
     private static let widthKey = "TabSidebarWidth"
 

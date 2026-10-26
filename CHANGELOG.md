@@ -4,6 +4,11 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.2.3 - 2026-10-26
+
+### Fixes
+- With Tab Colors set to Dot, the horizontal tab bar no longer fills colored tabs either.
+
 ## 0.2.2 - 2026-10-26
 
 ### Jump to tabs from the keyboard

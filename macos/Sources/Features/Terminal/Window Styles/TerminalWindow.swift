@@ -400,9 +400,10 @@ class TerminalWindow: NSWindow {
     private static let tabBackgroundTintIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.tabBackgroundTint")
 
     /// Fills this window's native tab button with the tab color instead of only
-    /// showing a dot. There is no API for this so we find the tab button by
-    /// walking up from our accessory view, which AppKit places inside it.
-    private func updateTabBackgroundTint() {
+    /// showing a dot, unless the sidebar's Tab Colors option is set to Dot.
+    /// There is no API for this so we find the tab button by walking up from
+    /// our accessory view, which AppKit places inside it.
+    func updateTabBackgroundTint() {
         var tabButton = tab.accessoryView?.superview
         while let view = tabButton, !view.className.contains("TabButton") {
             tabButton = view.superview
@@ -410,7 +411,7 @@ class TerminalWindow: NSWindow {
         guard let tabButton else { return }
 
         let tint = tabButton.subviews.first { $0.identifier == Self.tabBackgroundTintIdentifier }
-        guard let color = tabColor.displayColor else {
+        guard TabSidebarState.shared.colorStyle == .fill, let color = tabColor.displayColor else {
             tint?.removeFromSuperview()
             return
         }
