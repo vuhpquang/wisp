@@ -35,6 +35,32 @@ extension TerminalTabColor {
     }
 }
 
+/// How a tab's color shows in the sidebar: the whole tab filled with it, or a
+/// small dot before the title.
+enum TabColorStyle: String, CaseIterable {
+    case fill
+    case dot
+
+    var title: String {
+        switch self {
+        case .fill: "Fill Background"
+        case .dot: "Dot"
+        }
+    }
+}
+
+/// The dot shown before a colored tab's title in the dot style.
+struct TabColorDot: View {
+    let color: NSColor
+
+    var body: some View {
+        Circle()
+            .fill(Color(nsColor: color))
+            .overlay(Circle().strokeBorder(Color(nsColor: color.blended(withFraction: 0.3, of: .black) ?? color), lineWidth: 0.5))
+            .frame(width: 8, height: 8)
+    }
+}
+
 /// "Tab Color" in a tab's menu: None, then each color with its swatch, checked on the
 /// tab's current color.
 ///

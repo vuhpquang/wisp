@@ -367,6 +367,7 @@ struct WispSettingsView: View {
                 note: "Also in the tab menu. ⌘E pins or collapses the sidebar.")
             UnloadTabsPicker()
             GroupLabelStylePicker()
+            TabColorStylePicker()
             SettingPicker(key: "notify-on-command-finish", title: "Notify when a command finishes", options: ["never", "unfocused", "always"])
             SettingPicker(
                 key: "notify-on-command-finish-action", title: "Notify by",
@@ -384,6 +385,17 @@ private struct GroupLabelStylePicker: View {
     var body: some View {
         Picker("Group labels", selection: $state.groupLabelStyle) {
             ForEach(TabGroupLabelStyle.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
+    }
+}
+
+/// Whether colored tabs are filled with their color or marked with a dot.
+private struct TabColorStylePicker: View {
+    @ObservedObject private var state = TabSidebarState.shared
+
+    var body: some View {
+        Picker("Tab colors", selection: $state.colorStyle) {
+            ForEach(TabColorStyle.allCases, id: \.self) { Text($0.title).tag($0) }
         }
     }
 }

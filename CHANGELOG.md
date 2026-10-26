@@ -15,6 +15,8 @@ take the version from the first heading.
 
 ### Tab colors
 - More colors, in rainbow order, with a swatch next to each one in the Tab Color menu.
+- Show a tab's color as a filled background or as a small dot before its title: right-click
+  the sidebar and pick Tab Colors, or set it in Settings.
 
 ## 0.2.0 - 2026-10-25
 

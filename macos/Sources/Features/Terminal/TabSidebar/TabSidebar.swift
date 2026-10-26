@@ -27,6 +27,7 @@ final class TabSidebarState: ObservableObject {
     private static let detailsKey = "TabSidebarShowsDetails"
     private static let previewKey = "TabSidebarShowsPreview"
     private static let groupStyleKey = "TabSidebarGroupLabelStyle"
+    private static let colorStyleKey = "TabSidebarColorStyle"
 
     /// Show each tab's folder, git branch and command time under its title.
     @Published var showsDetails: Bool {
@@ -41,6 +42,11 @@ final class TabSidebarState: ObservableObject {
     /// How tab group labels look.
     @Published var groupLabelStyle: TabGroupLabelStyle {
         didSet { UserDefaults.ghostty.set(groupLabelStyle.rawValue, forKey: Self.groupStyleKey) }
+    }
+
+    /// Whether colored tabs are filled with their color or marked with a dot.
+    @Published var colorStyle: TabColorStyle {
+        didSet { UserDefaults.ghostty.set(colorStyle.rawValue, forKey: Self.colorStyleKey) }
     }
     private static let widthKey = "TabSidebarWidth"
 
@@ -74,6 +80,8 @@ final class TabSidebarState: ObservableObject {
         showsPreview = UserDefaults.ghostty.object(forKey: Self.previewKey) as? Bool ?? true
         groupLabelStyle = UserDefaults.ghostty.string(forKey: Self.groupStyleKey)
             .flatMap(TabGroupLabelStyle.init(rawValue:)) ?? .firefox
+        colorStyle = UserDefaults.ghostty.string(forKey: Self.colorStyleKey)
+            .flatMap(TabColorStyle.init(rawValue:)) ?? .fill
         let savedWidth = (UserDefaults.ghostty.object(forKey: Self.widthKey) as? Double).map { CGFloat($0) }
         width = Self.clampWidth(savedWidth ?? Self.defaultWidth)
 
@@ -1644,6 +1652,7 @@ private struct TabWorkspaceMenu: View {
 private struct TabSidebarTile: View {
     let tab: TabSidebarModel.Tab
     @ObservedObject var model: TabSidebarModel
+    @ObservedObject private var state = TabSidebarState.shared
     @State private var isHovering = false
 
     var body: some View {
@@ -1652,6 +1661,11 @@ private struct TabSidebarTile: View {
                 Image(systemName: "terminal")
                     .font(.system(size: 14, weight: .medium))
                     .frame(maxWidth: .infinity)
+
+                if state.colorStyle == .dot, let color = tab.color.displayColor {
+                    TabColorDot(color: color)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 if tab.needsAttention {
                     Circle()
@@ -1686,7 +1700,7 @@ private struct TabSidebarTile: View {
     }
 
     private var background: Color {
-        if let color = tab.color.displayColor {
+        if state.colorStyle == .fill, let color = tab.color.displayColor {
             return Color(nsColor: color).opacity(tab.isSelected ? 0.55 : 0.3)
         }
 
@@ -1838,6 +1852,9 @@ private struct TabSidebarBackgroundMenu: View {
         Toggle("Preview Tabs on Hover", isOn: $state.showsPreview)
         Picker("Group Labels", selection: $state.groupLabelStyle) {
             ForEach(TabGroupLabelStyle.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
+        Picker("Tab Colors", selection: $state.colorStyle) {
+            ForEach(TabColorStyle.allCases, id: \.self) { Text($0.title).tag($0) }
         }
         Picker("Unload Idle Tabs", selection: $sleep.autoUnloadMinutes) {
             ForEach(TabSleepStore.autoUnloadChoices, id: \.self) { minutes in
@@ -2002,6 +2019,11 @@ private struct TabSidebarRow: View {
 
             TabActivityIndicator(activity: tab.activity)
 
+            if state.colorStyle == .dot, let color = tab.color.displayColor {
+                TabColorDot(color: color)
+                    .help(tab.color.localizedName)
+            }
+
             if showsWorkspace,
                let workspace = TabWorkspaceStore.shared.workspaces.first(where: { $0.id == tab.workspaceID }) {
                 TabIcon(icon: workspace.icon)
@@ -2098,9 +2120,10 @@ private struct TabSidebarRow: View {
         return directory
     }
 
-    /// Colored tabs are filled with their color, stronger when selected.
+    /// Colored tabs are filled with their color, stronger when selected, unless
+    /// the color is shown as a dot.
     private var background: Color {
-        if let color = tab.color.displayColor {
+        if state.colorStyle == .fill, let color = tab.color.displayColor {
             return Color(nsColor: color).opacity(tab.isSelected ? 0.55 : 0.28)
         }
 
