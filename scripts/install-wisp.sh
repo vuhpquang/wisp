@@ -31,6 +31,8 @@ cd "$(dirname "$0")/.."
 source_dir="$(pwd)"
 
 # WISP_DEST builds somewhere else, e.g. for packaging a release.
+# WISP_RELEASE_REPO ("owner/name") makes the app update from that repo's
+# GitHub releases instead of from this checkout.
 dest="${WISP_DEST:-/Applications/Wisp.app}"
 built="macos/build/ReleaseLocal/Ghostty.app"
 
@@ -67,7 +69,9 @@ cp -R "$built" "$dest"
 
 # The generated Info.plist names the bundle after the Xcode target, which the
 # menu bar shows, so rename it here. The commit and source folder let the
-# in-app updater find new commits and rebuild. Then sign the app again.
+# in-app updater find new commits and rebuild; a release build records its
+# repo instead, since other Macs don't have this checkout. Then sign the app
+# again.
 plist="$dest/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Wisp" "$plist"
 # The version is the first one in CHANGELOG.md, which the app also shows
@@ -75,8 +79,12 @@ plist="$dest/Contents/Info.plist"
 version="$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$plist"
 cp CHANGELOG.md "$dest/Contents/Resources/CHANGELOG.md"
-/usr/libexec/PlistBuddy -c "Add :WispCommit string $(git rev-parse HEAD)" "$plist"
-/usr/libexec/PlistBuddy -c "Add :WispSourcePath string $source_dir" "$plist"
+if [ -n "${WISP_RELEASE_REPO:-}" ]; then
+  /usr/libexec/PlistBuddy -c "Add :WispReleaseRepo string $WISP_RELEASE_REPO" "$plist"
+else
+  /usr/libexec/PlistBuddy -c "Add :WispCommit string $(git rev-parse HEAD)" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :WispSourcePath string $source_dir" "$plist"
+fi
 
 # Sign with a fixed certificate when there is one, so macOS keeps Wisp's
 # permissions (like Accessibility) across updates. Ad hoc signatures change

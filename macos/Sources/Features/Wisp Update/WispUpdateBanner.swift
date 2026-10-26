@@ -20,12 +20,12 @@ struct WispUpdateBanner: View {
                 Text("Wisp is up to date")
             }
 
-        case .available(let commits, let latest):
+        case .available(let summary):
             banner(icon: "arrow.down.circle.fill", tint: .accentColor) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Update available")
                         .fontWeight(.semibold)
-                    Text(commits == 1 ? latest : "\(commits) changes · \(latest)")
+                    Text(summary)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                     HStack {
@@ -46,7 +46,7 @@ struct WispUpdateBanner: View {
                     ProgressView().controlSize(.small)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Updating Wisp…")
-                        Text("Building takes a few minutes")
+                        Text(updater.buildsFromSource ? "Building takes a few minutes" : "Downloading the new version")
                             .foregroundStyle(.secondary)
                     }
                 }

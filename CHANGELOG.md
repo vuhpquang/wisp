@@ -4,6 +4,12 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.2.4 - 2026-10-26
+
+### Updates
+- Wisp downloaded from GitHub Releases now updates itself: it checks for a new release, and
+  Update downloads it and replaces the app. Builds from a checkout still pull and rebuild.
+
 ## 0.2.3 - 2026-10-26
 
 ### Fixes

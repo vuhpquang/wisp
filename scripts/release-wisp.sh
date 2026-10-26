@@ -33,8 +33,11 @@ if [ "$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)" != "$ver
   exit 1
 fi
 
+# Name the repo explicitly: gh would otherwise pick the upstream remote.
+repo="$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
+
 out="$(mktemp -d)"
-WISP_DEST="$out/Wisp.app" ./scripts/install-wisp.sh
+WISP_DEST="$out/Wisp.app" WISP_RELEASE_REPO="$repo" ./scripts/install-wisp.sh
 
 zip="$out/Wisp-$version.zip"
 echo "==> Packaging $zip"
@@ -46,9 +49,11 @@ ditto -c -k --sequesterRsrc --keepParent "$out/Wisp.app" "$zip"
   echo
   echo "## Install"
   echo
-  echo "Unzip and move Wisp.app to /Applications. The app isn't notarized: the"
-  echo "first time, right-click it and choose Open. To build it yourself (and get"
-  echo "in-app updates), clone the repo and run \`scripts/install-wisp.sh\`."
+  echo "Download \`Wisp-$version.zip\`, unzip it and move Wisp.app to /Applications. Built for"
+  echo "Apple silicon. The app isn't notarized: the first time, right-click it and choose Open,"
+  echo "or run \`xattr -dr com.apple.quarantine /Applications/Wisp.app\`. After that Wisp updates"
+  echo "itself from these releases. To build it yourself, clone the repo and run"
+  echo "\`scripts/install-wisp.sh\`."
 } > "$out/notes.md"
 
 echo "==> Tagging $tag"
@@ -56,6 +61,4 @@ git tag -a "$tag" -m "Wisp $version"
 git push origin "$tag"
 
 echo "==> Creating the GitHub release"
-# Name the repo explicitly: gh would otherwise pick the upstream remote.
-repo="$(git remote get-url origin | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
 gh release create "$tag" "$zip" --repo "$repo" --title "Wisp $version" --notes-file "$out/notes.md"

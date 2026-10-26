@@ -1026,7 +1026,7 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func checkForUpdates(_ sender: Any?) {
-        // Wisp updates by rebuilding from its checkout, see WispUpdater.
+        // Wisp updates from its checkout or GitHub releases, see WispUpdater.
         WispUpdater.shared.check(userInitiated: true)
         // UpdateSimulator.happyPath.simulate(with: updateViewModel)
     }
