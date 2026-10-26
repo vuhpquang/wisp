@@ -270,6 +270,7 @@ final class TabSidebarModel: ObservableObject {
         let store = TabWorkspaceStore.shared
         store.$activeID.removeDuplicates().dropFirst()
             .sink { [weak self] _ in
+                self?.clearSelection()
                 self?.scheduleReload(after: 0)
                 DispatchQueue.main.async {
                     (self?.window?.tabGroup?.selectedWindow?.windowController as? TerminalController)?.relabelTabs()
@@ -349,6 +350,10 @@ final class TabSidebarModel: ObservableObject {
         // Views read the active workspace from the store directly, so only
         // publish when the tabs themselves changed.
         if newTabs != tabs { tabs = newTabs }
+
+        // Forget closed tabs.
+        let ids = Set(newTabs.map(\.id))
+        if !selection.isSubset(of: ids) { selection.formIntersection(ids) }
     }
 
     /// Whether a long command finished in any split since the tab was viewed.
@@ -393,6 +398,63 @@ final class TabSidebarModel: ObservableObject {
         // Give the terminal focus back, e.g. after typing in the search field.
         if let surface = (target.windowController as? BaseTerminalController)?.focusedSurface {
             target.makeFirstResponder(surface)
+        }
+    }
+
+    // MARK: Selecting several tabs
+
+    /// Tabs picked with ⌘- or ⇧-click to close, group or move together. The
+    /// selected (shown) tab doesn't change while picking them.
+    @Published private(set) var selection: Set<Tab.ID> = []
+
+    /// Where a ⇧-click range starts: the last ⌘-clicked tab, else the shown one.
+    private var selectionAnchor: Tab.ID?
+
+    func isMultiSelected(_ id: Tab.ID) -> Bool {
+        selection.count > 1 && selection.contains(id)
+    }
+
+    /// The picked tabs in tab order.
+    var selectedIDs: [Tab.ID] {
+        tabs.map(\.id).filter(selection.contains)
+    }
+
+    /// A click on a tab: ⌘ adds or removes it, ⇧ picks every tab between it and
+    /// the anchor, a plain click shows it and forgets the picked tabs.
+    func click(_ id: Tab.ID) {
+        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let shown = tabs.first(where: \.isSelected)?.id
+
+        if flags.contains(.shift) {
+            let anchor = selectionAnchor ?? shown ?? id
+            let order = visibleTabIDs
+            if let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: id) {
+                let range = Set(order[min(a, b)...max(a, b)])
+                selection = flags.contains(.command) ? selection.union(range) : range
+            } else {
+                selection.insert(id)
+            }
+            selectionAnchor = anchor
+        } else if flags.contains(.command) {
+            if selection.isEmpty, let shown { selection.insert(shown) }
+            if selection.remove(id) == nil { selection.insert(id) }
+            selectionAnchor = id
+        } else {
+            clearSelection()
+            select(id)
+        }
+    }
+
+    func clearSelection() {
+        if !selection.isEmpty { selection = [] }
+        selectionAnchor = nil
+    }
+
+    /// Tabs in the order the sidebar lists them: pinned tiles, then the list.
+    private var visibleTabIDs: [Tab.ID] {
+        pinnedTabs.map(\.id) + workspaceItems.compactMap { item in
+            if case .tab(let tab) = item { return tab.id }
+            return nil
         }
     }
 
@@ -525,8 +587,14 @@ final class TabSidebarModel: ObservableObject {
     /// Like Firefox: the tab joins a new group right away and the group's panel
     /// opens to name it and pick a color.
     func promptNewGroup(with tabID: Tab.ID) {
+        promptNewGroup(with: [tabID])
+    }
+
+    /// The tabs gather where the first one is.
+    func promptNewGroup(with tabIDs: [Tab.ID]) {
+        guard !tabIDs.isEmpty else { return }
         let group = TabGroupStore.shared.create(name: "")
-        addTab(tabID, toGroup: group.id)
+        for id in tabIDs { addTab(id, toGroup: group.id) }
         // Let the label appear before the panel anchors to it.
         DispatchQueue.main.async { [weak self] in self?.editingGroup = EditingGroup(id: group.id, isNew: true) }
     }
@@ -890,8 +958,30 @@ final class TabSidebarModel: ObservableObject {
 
     func drop(_ item: DragItem, on target: DropTarget) {
         switch item {
+        case .tab(let id) where isMultiSelected(id):
+            dropTabs(selectedIDs, on: target)
+            clearSelection()
         case .tab(let id): dropTab(id, on: target)
         case .group(let groupID): moveGroup(groupID, to: target)
+        }
+    }
+
+    /// Dragging one of several picked tabs moves them all: the first lands
+    /// where it's dropped and the others follow it, in the same group.
+    private func dropTabs(_ ids: [Tab.ID], on target: DropTarget) {
+        guard let first = ids.first else { return }
+        dropTab(first, on: target)
+        guard let lead = window(for: first) as? TerminalWindow else { return }
+
+        var previous: NSWindow = lead
+        for id in ids.dropFirst() {
+            guard let window = window(for: id) as? TerminalWindow,
+                  window.isTabPinned == lead.isTabPinned else { continue }
+            let group = window.tabGroupID
+            if !window.isTabPinned { window.tabGroupID = lead.tabGroupID }
+            reorder(window, relativeTo: previous, ordered: .above)
+            previous = window
+            if let group, group != window.tabGroupID { deleteGroupIfEmpty(group) }
         }
     }
 
@@ -1590,7 +1680,8 @@ private struct TabSidebarTile: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .modifier(TabPreviewOnHover(tab: tab, model: model, isHovering: isHovering))
-        .onTapGesture { model.select(tab.id) }
+        .modifier(TabMultiSelectionOutline(isSelected: model.isMultiSelected(tab.id), cornerRadius: 9))
+        .onTapGesture { model.click(tab.id) }
         .contextMenu { TabSidebarContextMenu(tab: tab, model: model) }
     }
 
@@ -1599,6 +1690,7 @@ private struct TabSidebarTile: View {
             return Color(nsColor: color).opacity(tab.isSelected ? 0.55 : 0.3)
         }
 
+        if model.isMultiSelected(tab.id) { return Color.accentColor.opacity(0.22) }
         if tab.isSelected { return Color.primary.opacity(0.16) }
         return Color.primary.opacity(isHovering ? 0.1 : 0.06)
     }
@@ -1824,6 +1916,15 @@ private struct TabSidebarContextMenu: View {
     let model: TabSidebarModel
 
     var body: some View {
+        if model.isMultiSelected(tab.id) {
+            TabSelectionMenu(model: model)
+        } else {
+            singleTabMenu
+        }
+    }
+
+    @ViewBuilder
+    private var singleTabMenu: some View {
         Button(tab.isPinned ? "Unpin Tab" : "Pin Tab") { model.togglePin(tab.id) }
         Button("Rename Tab…") { model.rename(tab.id) }
         Menu("Move to Workspace") {
@@ -1976,10 +2077,11 @@ private struct TabSidebarRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .modifier(TabPreviewOnHover(tab: tab, model: model, isHovering: isHovering))
+        .modifier(TabMultiSelectionOutline(isSelected: model.isMultiSelected(tab.id), cornerRadius: 7))
         // Selecting happens on the first click so it isn't delayed while
         // waiting to see whether a second click follows.
         .onTapGesture(count: 2) { model.rename(tab.id) }
-        .simultaneousGesture(TapGesture().onEnded { if !isRenaming { model.select(tab.id) } })
+        .simultaneousGesture(TapGesture().onEnded { if !isRenaming { model.click(tab.id) } })
         .onChange(of: model.renamingID) { id in
             guard id == tab.id else { return }
             draft = model.editableTitle(tab.id)
@@ -2002,6 +2104,7 @@ private struct TabSidebarRow: View {
             return Color(nsColor: color).opacity(tab.isSelected ? 0.55 : 0.28)
         }
 
+        if model.isMultiSelected(tab.id) { return Color.accentColor.opacity(0.22) }
         if tab.isSelected { return Color.primary.opacity(0.14) }
         if isHovering { return Color.primary.opacity(0.07) }
         return .clear

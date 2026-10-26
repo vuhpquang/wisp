@@ -42,15 +42,21 @@ extension TerminalTabColor {
 /// menu items. An inline Picker keeps its items' icons, and an image inside a Text
 /// survives in a label, so those carry the swatches.
 struct TabColorMenu: View {
-    let tab: TabSidebarModel.Tab
-    let model: TabSidebarModel
+    let color: TerminalTabColor
+    let apply: (TerminalTabColor) -> Void
+
+    init(tab: TabSidebarModel.Tab, model: TabSidebarModel) {
+        self.init(color: tab.color) { model.setColor($0, for: tab.id) }
+    }
+
+    init(color: TerminalTabColor, apply: @escaping (TerminalTabColor) -> Void) {
+        self.color = color
+        self.apply = apply
+    }
 
     var body: some View {
         Menu {
-            Picker(selection: Binding(
-                get: { tab.color },
-                set: { model.setColor($0, for: tab.id) }
-            )) {
+            Picker(selection: Binding(get: { color }, set: apply)) {
                 item(.none)
                 Divider()
                 ForEach(TerminalTabColor.ordered, id: \.self) { item($0) }
@@ -60,10 +66,10 @@ struct TabColorMenu: View {
             .pickerStyle(.inline)
             .labelsHidden()
         } label: {
-            if tab.color == .none {
+            if color == .none {
                 Text("Tab Color")
             } else {
-                Text(Image(nsImage: tab.color.menuSwatch)) + Text("  Tab Color")
+                Text(Image(nsImage: color.menuSwatch)) + Text("  Tab Color")
             }
         }
     }
