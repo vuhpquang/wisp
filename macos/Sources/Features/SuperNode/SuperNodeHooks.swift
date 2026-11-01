@@ -127,6 +127,11 @@ enum SuperNodeHooks {
     fi
     mv "$tmp" "$dir/events/$id.json"
 
+    # What this session is connected to on the canvas; Claude adds it to its context.
+    case "$event" in
+      UserPromptSubmit|SessionStart) cat "$dir/links/$node.md" 2>/dev/null ;;
+    esac
+
     [ "$event" = "PermissionRequest" ] || exit 0
     answer="$dir/answers/$id"
     i=0
@@ -163,6 +168,7 @@ struct SuperNodeHookEvent {
     var toolInput: [String: Any]? { payload["tool_input"] as? [String: Any] }
     var toolUseID: String? { payload["tool_use_id"] as? String }
     var message: String? { payload["message"] as? String }
+    var transcriptPath: String? { payload["transcript_path"] as? String }
     /// Set when a subagent, not the main conversation, sent the event.
     var isSubagent: Bool { payload["agent_id"] != nil }
 
@@ -218,18 +224,33 @@ struct SuperNodeAgentState: Equatable {
         var id: String { text }
     }
 
+    /// A subagent started by the Task tool.
+    struct Subagent: Equatable {
+        let id: String
+        let type: String?
+        let description: String
+        let started: Date
+        var finished: Date?
+    }
+
     var phase: Phase = .idle
     var tool: String?
     var permission: Permission?
     var message: String?
-    /// Subagents running now, by tool use ID, with what they're doing.
-    var subagents: [String: String] = [:]
+    /// Subagents of this turn, running and recently finished, by tool use ID.
+    var subagents: [String: Subagent] = [:]
     var sessionID: String?
+    var transcriptPath: String?
+
+    var runningSubagents: Int {
+        subagents.values.filter { $0.finished == nil }.count
+    }
 
     /// Updates the state for an event. Returns what the user should be told,
     /// if anything.
     mutating func apply(_ event: SuperNodeHookEvent) -> Phase? {
         if let session = event.sessionID { sessionID = session }
+        if let path = event.transcriptPath { transcriptPath = path }
         let before = phase
 
         switch event.name {
@@ -244,11 +265,15 @@ struct SuperNodeAgentState: Equatable {
         case "PreToolUse":
             tool = event.toolName
             if event.toolName == "Task" || event.toolName == "Agent", let id = event.toolUseID {
-                subagents[id] = event.toolSummary ?? "Subagent"
+                subagents[id] = Subagent(
+                    id: id,
+                    type: event.toolInput?["subagent_type"] as? String,
+                    description: event.toolSummary ?? "Subagent",
+                    started: Date())
             }
             if permission == nil { phase = .working }
         case "PostToolUse":
-            if let id = event.toolUseID { subagents[id] = nil }
+            if let id = event.toolUseID, subagents[id] != nil { subagents[id]?.finished = Date() }
             // A tool that ran was answered, here or in the terminal.
             if permission?.tool == event.toolName { permission = nil }
             if permission == nil { phase = .working }

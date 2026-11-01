@@ -137,6 +137,7 @@ final class SuperNodeHeaderView: NSView {
     let icon = NSImageView()
     let titleLabel = NSTextField(labelWithString: "")
     let badge = SuperNodeBadge()
+    let meter = SuperNodeContextMeter()
     let subtitleLabel = NSTextField(labelWithString: "")
     private let buttons = NSStackView()
     private let linkHandle = SuperNodeLinkHandle()
@@ -167,7 +168,8 @@ final class SuperNodeHeaderView: NSView {
         buttons.addArrangedSubview(linkHandle)
         buttons.addArrangedSubview(closeButton)
 
-        let leading = NSStackView(views: [icon, titleLabel, badge, subtitleLabel])
+        meter.isHidden = true
+        let leading = NSStackView(views: [icon, titleLabel, badge, meter, subtitleLabel])
         leading.orientation = .horizontal
         leading.spacing = 6
         leading.alignment = .centerY
@@ -407,6 +409,11 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
     let usesTmux: Bool
     /// The program in the tmux pane, such as zsh or claude, read every few seconds.
     var paneCommand: String?
+
+    /// How full Claude's context window is, from its transcript.
+    var contextUsage: (tokens: Int, window: Int)? {
+        didSet { header.meter.show(contextUsage) }
+    }
     private var webButton: NSButton?
 
     /// The last local address the terminal printed, such as a dev server's.
@@ -492,7 +499,7 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
             case .done: return ("DONE", .systemGreen)
             case .idle: return ("IDLE", .secondaryLabelColor)
             case .working:
-                let count = agentState.subagents.count
+                let count = agentState.runningSubagents
                 return (count == 0 ? "RUNNING" : "RUNNING · \(count) AGENT\(count == 1 ? "" : "S")", .controlAccentColor)
             }
         }
@@ -738,7 +745,12 @@ final class SuperNodeGroupView: SuperNodeNodeView {
         layer?.backgroundColor = color.withAlphaComponent(0.07).cgColor
         header.layer?.backgroundColor = color.withAlphaComponent(0.16).cgColor
         let count = canvas?.nodes(inside: self).count ?? 0
-        header.subtitleLabel.stringValue = count == 1 ? "1 node" : "\(count) nodes"
+        var parts = [count == 1 ? "1 node" : "\(count) nodes"]
+        if let directory = item.directory {
+            let place = (directory as NSString).abbreviatingWithTildeInPath
+            parts.insert(item.worktree == true ? "worktree \(place)" : place, at: 0)
+        }
+        header.subtitleLabel.stringValue = parts.joined(separator: " · ")
     }
 
     // Only the header and resize grip take clicks; the inside of a group
@@ -746,5 +758,76 @@ final class SuperNodeGroupView: SuperNodeNodeView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let hit = super.hitTest(point) else { return nil }
         return hit === self ? nil : hit
+    }
+}
+
+// MARK: - Context meter
+
+/// How much of Claude's context window a session uses, as a small bar.
+final class SuperNodeContextMeter: NSView {
+    private var fraction: CGFloat = 0
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 34, height: 6) }
+
+    func show(_ usage: (tokens: Int, window: Int)?) {
+        guard let usage, usage.window > 0 else {
+            isHidden = true
+            return
+        }
+        isHidden = false
+        fraction = min(1, CGFloat(usage.tokens) / CGFloat(usage.window))
+        toolTip = "Context: \(usage.tokens / 1000)k of \(usage.window / 1000)k tokens (\(Int(fraction * 100))%)"
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
+        NSColor.tertiaryLabelColor.withAlphaComponent(0.3).setFill()
+        track.fill()
+        let color: NSColor = fraction > 0.85 ? .systemRed : fraction > 0.6 ? .systemOrange : .systemGreen
+        color.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: bounds.width * fraction, height: bounds.height), xRadius: 3, yRadius: 3).fill()
+    }
+}
+
+// MARK: - Subagent cards
+
+/// A subagent Claude started, shown beside its agent node while it runs.
+struct SuperNodeSubagentCard: View {
+    let subagent: SuperNodeAgentState.Subagent
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: subagent.finished == nil ? "person.2.wave.2" : "checkmark.circle.fill")
+                    .foregroundStyle(subagent.finished == nil ? Color.purple : Color.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(subagent.type ?? "Subagent")
+                            .font(.system(size: 11, weight: .semibold))
+                        Spacer(minLength: 4)
+                        Text(elapsed(until: subagent.finished ?? context.date))
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(subagent.description)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .padding(8)
+            .frame(width: SuperNodeSubagentCard.size.width, height: SuperNodeSubagentCard.size.height, alignment: .topLeading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.purple.opacity(subagent.finished == nil ? 0.6 : 0.2)))
+            .opacity(subagent.finished == nil ? 1 : 0.6)
+        }
+    }
+
+    static let size = CGSize(width: 220, height: 58)
+
+    private func elapsed(until end: Date) -> String {
+        let seconds = max(0, Int(end.timeIntervalSince(subagent.started)))
+        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
     }
 }

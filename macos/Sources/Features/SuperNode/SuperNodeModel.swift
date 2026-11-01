@@ -117,6 +117,9 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
     /// The Claude Code session of an agent node, to resume after a relaunch.
     var sessionID: String?
 
+    /// Set on a group whose folder is a git worktree Wisp created for it.
+    var worktree: Bool?
+
     // Board card details.
     var column: UUID?
     var boardOrder: Double?
@@ -188,6 +191,12 @@ enum SuperNodeAgent: String, Codable, CaseIterable {
         case .gemini:
             return "gemini"
         }
+    }
+
+    /// Starts a copy of a Claude conversation that goes its own way.
+    static func forkCommand(sessionID: String) -> String {
+        "claude --settings \(SuperNodeHooks.shellQuote(SuperNodeHooks.settingsURL.path))"
+            + " --resume \(SuperNodeHooks.shellQuote(sessionID)) --fork-session"
     }
 }
 

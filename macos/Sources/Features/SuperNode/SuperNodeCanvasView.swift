@@ -66,6 +66,9 @@ final class SuperNodeCanvasView: NSView {
     private var saveWork: DispatchWorkItem?
     private var diffTimer: Timer?
     private var scrollbackTimer: Timer?
+    /// Agents whose transcript is about to be read again.
+    private var pendingTranscriptReads: Set<UUID> = []
+    private var subagentCards: [UUID: [String: NSHostingView<SuperNodeSubagentCard>]] = [:]
     private var readingPanes = false
 
     static let zoomRange: ClosedRange<CGFloat> = 0.15...1.5
@@ -342,6 +345,8 @@ final class SuperNodeCanvasView: NSView {
             }
         }
 
+        drawSubagentConnectors()
+
         if let linkDrag {
             let target = CGRect(origin: linkDrag.to, size: CGSize(width: 1, height: 1))
             let (path, _, _, _) = path(from: linkDrag.from.item.frame, to: target)
@@ -559,6 +564,7 @@ final class SuperNodeCanvasView: NSView {
     private func defaultDirectory(near frame: CGRect) -> String? {
         let center = CGPoint(x: frame.midX, y: frame.midY)
         let group = nodeViews.last { $0.item.kind == .group && $0.item.frame.contains(center) }
+        if let directory = group?.item.directory { return directory }
         let inside = group.map { nodes(inside: $0) } ?? []
         return inside.compactMap { ($0 as? SuperNodeTerminalView)?.directory }.first
     }
@@ -567,7 +573,8 @@ final class SuperNodeCanvasView: NSView {
     private func addNodeView(
         for item: SuperNodeItem,
         restoring: Bool,
-        baseConfig: Ghostty.SurfaceConfiguration? = nil
+        baseConfig: Ghostty.SurfaceConfiguration? = nil,
+        command: String? = nil
     ) -> SuperNodeNodeView? {
         let view: SuperNodeNodeView
         switch item.kind {
@@ -601,7 +608,7 @@ final class SuperNodeCanvasView: NSView {
             if item.kind == .agent, let agent = item.agent, !running {
                 // Typed into the shell rather than run as the command, so the
                 // shell stays when the agent exits.
-                config.initialInput = agent.command(resuming: restoring, sessionID: item.sessionID) + "\n"
+                config.initialInput = (command ?? agent.command(resuming: restoring, sessionID: item.sessionID)) + "\n"
             }
             let surface = SuperNodeSurfaceView(app, baseConfig: config)
             view = SuperNodeTerminalView(item: item, surface: surface, ghostty: ghostty, usesTmux: usesTmux)
@@ -633,8 +640,9 @@ final class SuperNodeCanvasView: NSView {
 
     private func sortNodes() {
         world.sortSubviews({ a, b, _ in
-            let za = (a as? SuperNodeNodeView)?.zOrder ?? 0
-            let zb = (b as? SuperNodeNodeView)?.zOrder ?? 0
+            // Subagent cards aren't nodes and stay on top.
+            let za = (a as? SuperNodeNodeView)?.zOrder ?? Int.max
+            let zb = (b as? SuperNodeNodeView)?.zOrder ?? Int.max
             return za < zb ? .orderedAscending : za > zb ? .orderedDescending : .orderedSame
         }, context: nil)
     }
@@ -670,6 +678,7 @@ final class SuperNodeCanvasView: NSView {
     func move(_ node: SuperNodeNodeView, by delta: CGSize) {
         for view in [node] + movingGroupMembers {
             view.item.frame = view.item.frame.offsetBy(dx: delta.width, dy: delta.height)
+            if let terminal = view as? SuperNodeTerminalView { layoutSubagentCards(for: terminal) }
         }
         needsDisplay = true
     }
@@ -684,6 +693,7 @@ final class SuperNodeCanvasView: NSView {
     func resize(_ node: SuperNodeNodeView, to size: CGSize) {
         let minimum = node.item.kind.minimumSize
         node.item.frame.size = CGSize(width: max(minimum.width, size.width), height: max(minimum.height, size.height))
+        if let terminal = node as? SuperNodeTerminalView { layoutSubagentCards(for: terminal) }
         needsDisplay = true
     }
 
@@ -705,6 +715,8 @@ final class SuperNodeCanvasView: NSView {
         }
 
         node.tearDown()
+        SuperNodeContext.remove(node.item.id)
+        removeSubagentCards(for: node.item.id)
         node.removeFromSuperview()
         nodeViews.removeAll { $0 === node }
         document.edges.removeAll { $0.from == node.item.id || $0.to == node.item.id }
@@ -746,6 +758,9 @@ final class SuperNodeCanvasView: NSView {
                 self?.openFile(at: nil, in: terminal.directory, from: terminal)
             })
             menu.addItem(SuperNodeMenuItem(title: "New Note for This Node") { [weak self] in self?.addNote(for: terminal) })
+            if terminal.item.agent == .claude, terminal.agentState?.sessionID ?? terminal.item.sessionID != nil {
+                menu.addItem(SuperNodeMenuItem(title: "Branch Conversation") { [weak self] in self?.branchConversation(of: terminal) })
+            }
             menu.addItem(SuperNodeMenuItem(title: "Open Folder in a New Tab") { [weak self] in self?.openInTab(terminal) })
         }
         if node.item.kind == .group {
@@ -754,6 +769,15 @@ final class SuperNodeCanvasView: NSView {
                 self?.addNode(.terminal, at: CGPoint(x: node.item.frame.midX, y: node.item.frame.midY))
             })
             menu.addItem(SuperNodeMenuItem(title: "Fit Group to Nodes") { [weak self] in self?.fit(group: node) })
+            menu.addItem(.separator())
+            if node.item.worktree == true {
+                menu.addItem(SuperNodeMenuItem(title: "New Agent in Worktree") { [weak self] in
+                    self?.addNode(.agent, at: CGPoint(x: node.item.frame.midX, y: node.item.frame.midY), agent: .claude)
+                })
+                menu.addItem(SuperNodeMenuItem(title: "Remove Worktree…") { [weak self] in self?.removeWorktree(of: node) })
+            } else {
+                menu.addItem(SuperNodeMenuItem(title: "Work in a New Git Worktree…") { [weak self] in self?.createWorktree(for: node) })
+            }
         }
 
         menu.addItem(.separator())
@@ -1105,6 +1129,8 @@ final class SuperNodeCanvasView: NSView {
     private func refreshDiffs() {
         readPanes()
         for terminal in terminalNodes { terminal.findDevServer() }
+        writeTerminalDigests()
+        pruneSubagents()
         for node in nodeViews {
             (node as? SuperNodeDiffView)?.reload()
             (node as? SuperNodeEditorView)?.checkDisk()
@@ -1134,6 +1160,8 @@ final class SuperNodeCanvasView: NSView {
         var state = node.agentState ?? SuperNodeAgentState()
         let notify = state.apply(event)
         node.agentState = state
+        layoutSubagentCards(for: node)
+        scheduleTranscriptRead(for: node)
         if let session = state.sessionID, session != node.item.sessionID {
             node.item.sessionID = session
             documentDidChange()
@@ -1247,6 +1275,301 @@ final class SuperNodeCanvasView: NSView {
         documentDidChange()
     }
 
+    // MARK: Agents working together
+
+    /// The nodes connected to a node, with the label and direction of each connection.
+    private func neighbors(of node: SuperNodeNodeView) -> [(node: SuperNodeNodeView, label: String?, outgoing: Bool)] {
+        document.edges.compactMap { edge in
+            if edge.from == node.item.id, let other = self.node(edge.to) { return (other, edge.label, true) }
+            if edge.to == node.item.id, let other = self.node(edge.from) { return (other, edge.label, false) }
+            return nil
+        }
+    }
+
+    /// Writes, for every agent, what it's connected to. The hook prints this
+    /// when a prompt is sent, so Claude knows the other nodes and where to
+    /// read what they're doing.
+    private func updateLinks() {
+        for case let agent as SuperNodeTerminalView in nodeViews where agent.item.kind == .agent {
+            let lines = neighbors(of: agent).compactMap { describe($0.node, label: $0.label, outgoing: $0.outgoing) }
+            let text = lines.isEmpty ? nil : """
+            [Wisp SuperNode] This Claude Code session is a node on a canvas in Wisp, connected to:
+            \(lines.joined(separator: "\n"))
+            Read those files when the user mentions these nodes or you need to know what they're doing; \
+            Wisp keeps them up to date. Connections show how the user sees the work fitting together.
+
+            """
+            SuperNodeContext.write(text, to: SuperNodeContext.linksURL(agent.item.id))
+        }
+    }
+
+    private func describe(_ node: SuperNodeNodeView, label: String?, outgoing: Bool) -> String? {
+        let relation = label.map { outgoing ? " (this session → it: \($0))" : " (it → this session: \($0))" } ?? ""
+        let name = "\"\(node.displayTitle)\""
+        switch node {
+        case let terminal as SuperNodeTerminalView:
+            let place = terminal.directory.map { " in \($0)" } ?? ""
+            let kind = terminal.item.kind == .agent ? "\(terminal.item.agent?.name ?? "Agent") session" : "Terminal"
+            let what = terminal.item.kind == .agent ? "its recent conversation" : "its recent output"
+            return "- \(kind) \(name)\(place)\(relation). For \(what), read \(SuperNodeContext.digestURL(terminal.item.id).path)"
+        case let note as SuperNodeNoteView:
+            let text = (note.item.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return "- Note\(relation):\n" + text.prefix(2000).split(separator: "\n", omittingEmptySubsequences: false).map { "  > \($0)" }.joined(separator: "\n")
+        case let diff as SuperNodeDiffView:
+            return diff.directory.map { "- Git changes view of \($0)\(relation)" }
+        case let editor as SuperNodeEditorView:
+            return editor.path.map { "- File open in an editor: \($0)\(relation)" }
+        case let web as SuperNodeWebView:
+            return web.item.url.map { "- Web page \($0)\(relation)" }
+        default:
+            return nil
+        }
+    }
+
+    /// Reads an agent's transcript a moment after its events settle, for its
+    /// digest and context meter.
+    private func scheduleTranscriptRead(for node: SuperNodeTerminalView) {
+        guard let path = node.agentState?.transcriptPath, !pendingTranscriptReads.contains(node.item.id) else { return }
+        let id = node.item.id
+        pendingTranscriptReads.insert(id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self, weak node] in
+            self?.pendingTranscriptReads.remove(id)
+            guard let node else { return }
+            let title = node.displayTitle
+            let directory = node.directory
+            DispatchQueue.global(qos: .utility).async {
+                guard let transcript = SuperNodeContext.readTranscript(path) else { return }
+                let digest = """
+                # \(title): recent Claude Code conversation
+                Folder: \(directory ?? "unknown")
+                Updated: \(Date().formatted(date: .abbreviated, time: .standard))
+
+                \(transcript.conversation)
+
+                """
+                SuperNodeContext.write(digest, to: SuperNodeContext.digestURL(id))
+                DispatchQueue.main.async {
+                    guard let tokens = transcript.contextTokens else { return }
+                    node.contextUsage = (tokens, SuperNodeContext.contextWindow(model: transcript.model, tokens: tokens))
+                }
+            }
+        }
+    }
+
+    /// Keeps the output digest of terminals connected to an agent current.
+    private func writeTerminalDigests() {
+        let terminals = terminalNodes.filter { terminal in
+            terminal.item.kind != .agent && neighbors(of: terminal).contains { $0.node.item.kind == .agent }
+        }
+        guard !terminals.isEmpty else { return }
+        // The screen is read here; tmux history is read in the background.
+        let jobs = terminals.map { terminal in
+            (terminal.item.id, terminal.displayTitle, terminal.directory,
+             terminal.usesTmux ? nil : terminal.surface.cachedScreenContents.get())
+        }
+        DispatchQueue.global(qos: .utility).async {
+            for (id, title, directory, screen) in jobs {
+                let output = screen ?? SuperNodeTmux.capture(id, lines: 150) ?? ""
+                var lines = output.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) }
+                while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+                let digest = """
+                # \(title): recent terminal output
+                Folder: \(directory ?? "unknown")
+
+                ```
+                \(lines.suffix(150).joined(separator: "\n"))
+                ```
+
+                """
+                SuperNodeContext.write(digest, to: SuperNodeContext.digestURL(id))
+            }
+        }
+    }
+
+    /// Starts a copy of an agent's conversation in a new node beside it.
+    private func branchConversation(of agent: SuperNodeTerminalView) {
+        guard let session = agent.agentState?.sessionID ?? agent.item.sessionID else { return }
+        // Below the agent, past the row its subagent cards use.
+        let below = agent.item.frame.height + 28 + SuperNodeSubagentCard.size.height + 60
+        var item = SuperNodeItem(kind: .agent, frame: agent.item.frame.offsetBy(dx: 0, dy: below))
+        item.agent = .claude
+        item.directory = agent.directory
+        item.title = "\(agent.displayTitle) (branch)"
+        guard let branch = addNodeView(for: item, restoring: false, command: SuperNodeAgent.forkCommand(sessionID: session)) else { return }
+        select(node: branch)
+        connect(agent, to: branch, label: "branch")
+        documentDidChange()
+    }
+
+    // MARK: Worktree groups
+
+    /// Gives a group its own git worktree on a new or existing branch, so the
+    /// agents in it work apart from the main checkout.
+    private func createWorktree(for group: SuperNodeNodeView) {
+        let inside = nodes(inside: group).compactMap { ($0 as? SuperNodeTerminalView)?.directory }.first
+        let repository: String
+        if let inside {
+            repository = inside
+        } else {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.prompt = "Use Repository"
+            panel.message = "Choose the git repository to make a worktree from."
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            repository = url.path
+        }
+        prompt(title: "New Worktree", message: "The branch for this group. A new branch starts from the current one.", value: "") { [weak self, weak group] branch in
+            guard let self, let group, !branch.isEmpty else { return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Self.addWorktree(branch: branch, repository: repository)
+                DispatchQueue.main.async {
+                    switch result {
+                    case let .success(path):
+                        group.item.directory = path
+                        group.item.worktree = true
+                        group.item.title = branch
+                        group.refreshHeader()
+                        self.documentDidChange()
+                    case let .failure(message):
+                        self.showError("Couldn't create the worktree", message)
+                    }
+                }
+            }
+        }
+    }
+
+    private enum WorktreeResult {
+        case success(String)
+        case failure(String)
+    }
+
+    /// Adds a worktree next to the repository, in "<repo>.worktrees/<branch>".
+    private static func addWorktree(branch: String, repository: String) -> WorktreeResult {
+        let top = SuperNodeGit.run(["rev-parse", "--show-toplevel"], in: repository)
+        guard top.succeeded else { return .failure("\(repository) isn't in a git repository.") }
+        let root = URL(fileURLWithPath: top.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        let folder = branch.replacingOccurrences(of: "/", with: "-")
+        let path = root.deletingLastPathComponent()
+            .appendingPathComponent(root.lastPathComponent + ".worktrees")
+            .appendingPathComponent(folder).path
+        let exists = SuperNodeGit.run(["rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"], in: root.path).succeeded
+        let arguments = exists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path]
+        let result = SuperNodeGit.run(arguments, in: root.path)
+        return result.succeeded ? .success(path) : .failure(result.message)
+    }
+
+    private func removeWorktree(of group: SuperNodeNodeView) {
+        guard let path = group.item.directory, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove the worktree \(group.displayTitle)?"
+        alert.informativeText = "The folder \((path as NSString).abbreviatingWithTildeInPath) is deleted. The branch and its commits stay."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self, weak group] response in
+            guard response == .alertFirstButtonReturn, let self, let group else { return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                // Run from the main checkout, which owns the worktree.
+                let common = SuperNodeGit.run(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: path)
+                let main = URL(fileURLWithPath: common.output.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .deletingLastPathComponent().path
+                let result = common.succeeded
+                    ? SuperNodeGit.run(["worktree", "remove", path], in: main)
+                    : common
+                DispatchQueue.main.async {
+                    guard result.succeeded else {
+                        self.showError("Couldn't remove the worktree", result.message)
+                        return
+                    }
+                    group.item.directory = nil
+                    group.item.worktree = nil
+                    group.refreshHeader()
+                    self.documentDidChange()
+                }
+            }
+        }
+    }
+
+    private func showError(_ title: String, _ message: String) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.beginSheetModal(for: window)
+    }
+
+    // MARK: Subagent cards
+
+    /// Places an agent's subagent cards in a row under it.
+    func layoutSubagentCards(for node: SuperNodeTerminalView) {
+        let subagents = (node.agentState?.subagents.values).map { Array($0) } ?? []
+        var cards = subagentCards[node.item.id] ?? [:]
+        for id in cards.keys where !subagents.contains(where: { $0.id == id }) {
+            cards[id]?.removeFromSuperview()
+            cards[id] = nil
+        }
+        let size = SuperNodeSubagentCard.size
+        for (index, subagent) in subagents.sorted(by: { $0.started < $1.started }).enumerated() {
+            let card: NSHostingView<SuperNodeSubagentCard>
+            if let existing = cards[subagent.id] {
+                card = existing
+                card.rootView = SuperNodeSubagentCard(subagent: subagent)
+            } else {
+                card = NSHostingView(rootView: SuperNodeSubagentCard(subagent: subagent))
+                world.addSubview(card)
+                cards[subagent.id] = card
+            }
+            card.frame = CGRect(
+                x: node.item.frame.minX + CGFloat(index) * (size.width + 12),
+                y: node.item.frame.maxY + 28,
+                width: size.width,
+                height: size.height)
+        }
+        subagentCards[node.item.id] = cards.isEmpty ? nil : cards
+        needsDisplay = true
+    }
+
+    private func removeSubagentCards(for id: UUID) {
+        subagentCards[id]?.values.forEach { $0.removeFromSuperview() }
+        subagentCards[id] = nil
+    }
+
+    /// Finished subagents leave a little after they're done.
+    private func pruneSubagents() {
+        let cutoff = Date().addingTimeInterval(-10)
+        for node in terminalNodes {
+            guard var state = node.agentState else { continue }
+            let stale = state.subagents.values.filter { ($0.finished ?? .distantFuture) < cutoff }
+            guard !stale.isEmpty else { continue }
+            for subagent in stale { state.subagents[subagent.id] = nil }
+            node.agentState = state
+            layoutSubagentCards(for: node)
+        }
+    }
+
+    /// Dashed lines from agents to their subagent cards.
+    private func drawSubagentConnectors() {
+        for (id, cards) in subagentCards {
+            guard let node = node(id) else { continue }
+            let start = canvasPoint(fromWorld: CGPoint(x: node.item.frame.midX, y: node.item.frame.maxY))
+            for card in cards.values {
+                let end = canvasPoint(fromWorld: CGPoint(x: card.frame.midX, y: card.frame.minY))
+                let path = NSBezierPath()
+                path.move(to: start)
+                path.curve(
+                    to: end,
+                    controlPoint1: NSPoint(x: start.x, y: start.y + 20 * zoom),
+                    controlPoint2: NSPoint(x: end.x, y: end.y - 20 * zoom))
+                path.lineWidth = 1.5
+                path.setLineDash([4, 3], count: 2, phase: 0)
+                NSColor.systemPurple.withAlphaComponent(0.6).setStroke()
+                path.stroke()
+            }
+        }
+    }
+
     // MARK: tmux
 
     /// Reads each tmux pane's folder and program: a shell in tmux can't tell
@@ -1303,6 +1626,7 @@ final class SuperNodeCanvasView: NSView {
         saveWork = nil
         document.nodes = nodeViews.map(\.item)
         SuperNodeStore.save(document)
+        updateLinks()
     }
 
     // MARK: Dropping files

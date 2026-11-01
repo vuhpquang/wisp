@@ -24,6 +24,17 @@ take the version from the first heading.
   answers to its questions, including several at once or your own text. A
   notification tells you when an agent needs you or finishes, unless you're looking at it.
   Agents reopen their own conversation after a relaunch.
+- Connected agents know about each other. A Claude agent is told what it's connected to on the
+  canvas (other agents, terminals, notes, diffs, files, pages, and the labels on the
+  connections) and where Wisp keeps a digest of each one's recent conversation or output, so
+  it can read what the other is doing when it needs to.
+- Right-click a Claude agent and choose Branch Conversation to continue a copy of its
+  conversation in a new node, going a different way.
+- Right-click a group and choose Work in a New Git Worktree to give it its own branch in its
+  own folder; new terminals and agents in the group start there, so several agents can work on
+  the same repository without stepping on each other. Remove the worktree from the same menu.
+- Subagents an agent starts show as cards under it while they run, and a small bar on each
+  agent shows how full its context window is.
 - ⌘⇧B (or the board button) turns the canvas into a board: terminals, agents and notes are cards
   in To Do, In Progress, Review and Done, showing their status and last lines of output. Drag
   cards between columns while they keep running, add or rename columns, and open a card for the
