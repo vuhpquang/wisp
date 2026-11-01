@@ -4,6 +4,25 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.3.0 - 2026-11-01
+
+### SuperNode mode
+- Turn on the SuperNode switch in the top-right corner of a window (or Window > SuperNode Mode,
+  ⌃⌘N) to see your terminals as nodes on an infinite canvas. Turn it off to go back to your tabs;
+  the canvas and everything running on it stays.
+- Add terminals, Claude Code, Codex and Gemini agents, notes, diffs and groups from the bar at the
+  bottom, by right-clicking the canvas, or by double-clicking it for a terminal.
+- Drag the link icon on a node to another node to connect them, and double-click a connection to
+  label how they relate. Right-click a connection between two terminals to send one's output to
+  the other, or between a note and a terminal to send the note.
+- Agent nodes show RUNNING, NEEDS YOU or IDLE. Splitting a terminal (⌘D) opens a connected node
+  beside it; ⌘T opens a new node and ⌘W closes one.
+- A diff node shows a repository's uncommitted changes and refreshes as you work. Click ± on a
+  terminal to open one for its folder; click a file to jump to its changes.
+- Pan by scrolling or dragging the canvas, zoom by pinching or ⌘-scrolling. Moving a group moves
+  the nodes inside it. The canvas is saved, and terminals reopen in their folders after a
+  relaunch, with agents resuming their last conversation.
+
 ## 0.2.4 - 2026-10-26
 
 ### Updates

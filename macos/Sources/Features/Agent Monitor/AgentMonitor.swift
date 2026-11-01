@@ -94,28 +94,31 @@ final class AgentMonitorModel: ObservableObject {
         char.unicodeScalars.first.map { (0x2800...0x28FF).contains($0.value) } ?? false
     }
 
+    /// The status of a terminal running a coding agent, or nil if it isn't
+    /// running one.
+    static func agentStatus(of surface: Ghostty.SurfaceView) -> AgentSession.Status? {
+        guard isAgent(surface) else { return nil }
+        return status(of: surface, title: surface.title)
+    }
+
+    private static func status(of surface: Ghostty.SurfaceView, title: String) -> AgentSession.Status {
+        let report = surface.progressReport
+        if report?.state == .error { return .error }
+        if surface.bell { return .needsInput }
+        if let report, report.state != .remove { return .working }
+        if let first = title.first, isSpinner(first) { return .working }
+        return .idle
+    }
+
     private static func session(
         for surface: Ghostty.SurfaceView,
         in window: NSWindow,
         controller: BaseTerminalController
     ) -> AgentSession {
         let title = surface.title.isEmpty ? window.title : surface.title
-        let report = surface.progressReport
         let command = TabCommandTracker.shared.state(of: surface)
 
-        let status: AgentSession.Status
-        if report?.state == .error {
-            status = .error
-        } else if surface.bell {
-            status = .needsInput
-        } else if let report, report.state != .remove {
-            status = .working
-        } else if let first = title.first, isSpinner(first) {
-            status = .working
-        } else {
-            status = .idle
-        }
-
+        let status = status(of: surface, title: title)
         let pwd = surface.pwd.flatMap { $0.isEmpty ? nil : $0 }
         let store = TabWorkspaceStore.shared
         let workspaceID = store.workspaceID(of: window)

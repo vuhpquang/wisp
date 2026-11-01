@@ -234,6 +234,7 @@ class AppDelegate: NSObject,
         WispUpdater.shared.start()
         WispChangelog.showIfUpdated()
         installAgentMonitorMenuItem()
+        SuperNodeController.installMenuItem()
 
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()

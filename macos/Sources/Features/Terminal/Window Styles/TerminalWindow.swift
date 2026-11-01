@@ -210,6 +210,9 @@ class TerminalWindow: NSWindow {
                 addTitlebarAccessoryViewController(updateAccessory)
                 updateAccessory.view.translatesAutoresizingMaskIntoConstraints = false
             }
+
+            // Wisp: the SuperNode mode switch.
+            addSuperNodeAccessory()
         }
 
         // Setup the accessory view for tabs that shows our keyboard shortcuts,
