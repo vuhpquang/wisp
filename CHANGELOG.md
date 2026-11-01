@@ -17,8 +17,14 @@ take the version from the first heading.
   the other, or between a note and a terminal to send the note.
 - Agent nodes show RUNNING, NEEDS YOU or IDLE. Splitting a terminal (⌘D) opens a connected node
   beside it; ⌘T opens a new node and ⌘W closes one.
-- A diff node shows a repository's uncommitted changes and refreshes as you work. Click ± on a
-  terminal to open one for its folder; click a file to jump to its changes.
+- A diff node works like an editor's source control panel: it lists staged changes and changes,
+  shows the patch of the file you pick, and stages, unstages or discards a file or everything
+  (new files go to the Trash). Commit from its message field, push, pull, and switch or create
+  branches. Click ± on a terminal to open one for its folder; it refreshes as you work.
+- Editor nodes open files with line numbers. ⌘S saves, ⌘F finds. Double-click a file in a diff to
+  open it at its first change, open files from the bar or a terminal's menu, or drop files on the
+  canvas (dropped folders open a terminal there). When an agent changes an open file, the editor
+  reloads it, or marks it CHANGED ON DISK if you have unsaved edits.
 - Pan by scrolling or dragging the canvas, zoom by pinching or ⌘-scrolling. Moving a group moves
   the nodes inside it. The canvas is saved, and terminals reopen in their folders after a
   relaunch, with agents resuming their last conversation.

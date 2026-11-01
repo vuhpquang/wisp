@@ -98,6 +98,7 @@ class SuperNodeNodeView: NSView {
         case .note: "Note"
         case .diff: "Changes"
         case .group: "Group"
+        case .editor: "Editor"
         }
     }
 
@@ -113,6 +114,11 @@ class SuperNodeNodeView: NSView {
 
     /// Whether the node runs something that would be lost when it closes.
     var needsConfirmClose: Bool { false }
+
+    /// Shown when asking to close a node that needs confirmation.
+    var closeWarning: String {
+        "The process running in this node will be terminated."
+    }
 
     /// Called before the node is removed from the canvas.
     func tearDown() {}
@@ -540,124 +546,6 @@ final class SuperNodeNoteView: SuperNodeNodeView, NSTextViewDelegate {
 
     @objc private func send() {
         canvas?.sendNote(self)
-    }
-}
-
-// MARK: - Diff nodes
-
-/// The uncommitted changes of a repository. Connected to a terminal, it follows
-/// that terminal's folder.
-final class SuperNodeDiffView: SuperNodeNodeView, NSTextViewDelegate {
-    private let textView: NSTextView
-    private var diff: SuperNodeGitDiff?
-    private var loading = false
-    private var loadedDirectory: String?
-
-    override init(item: SuperNodeItem) {
-        let scrollView = NSTextView.scrollableTextView()
-        textView = scrollView.documentView as! NSTextView
-        super.init(item: item)
-
-        scrollView.borderType = .noBorder
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.textContainerInset = NSSize(width: 8, height: 8)
-        textView.backgroundColor = .textBackgroundColor
-        textView.delegate = self
-        textView.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
-        // Long lines scroll sideways instead of wrapping, like a code editor.
-        textView.isHorizontallyResizable = true
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        scrollView.hasHorizontalScroller = true
-        body = scrollView
-
-        header.addButton(symbol: "folder", tooltip: "Choose a folder", target: self, action: #selector(chooseFolder))
-        header.addButton(symbol: "arrow.clockwise", tooltip: "Refresh", target: self, action: #selector(refreshNow))
-        refreshHeader()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    /// The repository shown: the folder of a connected terminal, or the folder
-    /// the user chose.
-    var directory: String? {
-        canvas?.sourceDirectory(for: self) ?? item.directory
-    }
-
-    override func refreshHeader() {
-        super.refreshHeader()
-        var parts: [String] = []
-        if let directory { parts.append((directory as NSString).abbreviatingWithTildeInPath) }
-        if let branch = diff?.branch { parts.append(branch) }
-        if let diff, diff.error == nil {
-            parts.append(diff.files.count == 1 ? "1 file" : "\(diff.files.count) files")
-        }
-        header.subtitleLabel.stringValue = parts.joined(separator: " · ")
-        if let diff, diff.error == nil, !diff.files.isEmpty {
-            header.badge.show("+\(diff.added) −\(diff.removed)", color: .systemGreen)
-        } else {
-            header.badge.show(nil, color: .clear)
-        }
-    }
-
-    @objc func refreshNow() {
-        reload()
-    }
-
-    /// Reloads the diff in the background, updating the view if it changed.
-    func reload() {
-        guard !loading else { return }
-        guard let directory else {
-            textView.textStorage?.setAttributedString(NSAttributedString(
-                string: "Connect a terminal to this node, or choose a folder.",
-                attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]))
-            return
-        }
-        loading = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let diff = SuperNodeGitDiff.load(directory: directory)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.loading = false
-                guard diff != self.diff || directory != self.loadedDirectory else { return }
-                self.diff = diff
-                self.loadedDirectory = directory
-                let visible = self.textView.visibleRect
-                self.textView.textStorage?.setAttributedString(diff.attributedString())
-                self.textView.scrollToVisible(visible)
-                self.refreshHeader()
-            }
-        }
-    }
-
-    @objc private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.prompt = "Show Changes"
-        if let directory { panel.directoryURL = URL(fileURLWithPath: directory) }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        item.directory = url.path
-        canvas?.disconnectSources(of: self)
-        canvas?.documentDidChange()
-        reload()
-    }
-
-    // Clicking a file in the list jumps to its patch.
-    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-        guard let link = link as? String,
-              link.hasPrefix(SuperNodeGitDiff.fileLinkScheme + ":") else { return false }
-        let path = String(link.dropFirst(SuperNodeGitDiff.fileLinkScheme.count + 1))
-        let text = textView.string as NSString
-        let range = text.range(of: "diff --git a/\(path) ")
-        guard range.location != NSNotFound else { return true }
-        textView.scrollRangeToVisible(range)
-        textView.showFindIndicator(for: range)
-        return true
     }
 }
 

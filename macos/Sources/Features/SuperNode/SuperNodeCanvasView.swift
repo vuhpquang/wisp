@@ -87,6 +87,8 @@ final class SuperNodeCanvasView: NSView {
             dock.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
         ])
 
+        registerForDraggedTypes([.fileURL])
+
         for item in document.nodes {
             addNodeView(for: item, restoring: true)
         }
@@ -271,6 +273,7 @@ final class SuperNodeCanvasView: NSView {
         guard let from = node(edge.from), let to = node(edge.to) else { return .secondaryLabelColor }
         if from.item.kind == .note { return .systemYellow }
         if to.item.kind == .diff { return .systemGreen }
+        if to.item.kind == .editor { return .systemTeal }
         if from.item.kind == .agent || to.item.kind == .agent { return .systemPurple }
         return .controlAccentColor
     }
@@ -431,6 +434,7 @@ final class SuperNodeCanvasView: NSView {
         menu.addItem(.separator())
         menu.addItem(item("New Note", "note.text") { [weak self] in self?.addNode(.note, at: point) })
         menu.addItem(item("New Diff…", "plusminus") { [weak self] in self?.addDiff(at: point) })
+        menu.addItem(item("Open File…", "doc.text") { [weak self] in self?.openFile(at: point) })
         menu.addItem(item("New Group", "square.dashed") { [weak self] in self?.addNode(.group, at: point) })
         menu.addItem(.separator())
         menu.addItem(item("Zoom to Fit", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.zoomToFit() })
@@ -521,6 +525,8 @@ final class SuperNodeCanvasView: NSView {
             view = SuperNodeDiffView(item: item)
         case .group:
             view = SuperNodeGroupView(item: item)
+        case .editor:
+            view = SuperNodeEditorView(item: item)
         }
 
         view.canvas = self
@@ -598,7 +604,7 @@ final class SuperNodeCanvasView: NSView {
         if confirm && node.needsConfirmClose {
             let alert = NSAlert()
             alert.messageText = "Close \(node.displayTitle)?"
-            alert.informativeText = "The process running in this node will be terminated."
+            alert.informativeText = node.closeWarning
             alert.addButton(withTitle: "Close")
             alert.addButton(withTitle: "Cancel")
             alert.alertStyle = .warning
@@ -648,6 +654,9 @@ final class SuperNodeCanvasView: NSView {
         if let terminal = node as? SuperNodeTerminalView {
             menu.addItem(.separator())
             menu.addItem(SuperNodeMenuItem(title: "Show Changes") { [weak self] in self?.openDiff(for: terminal) })
+            menu.addItem(SuperNodeMenuItem(title: "Open File…") { [weak self] in
+                self?.openFile(at: nil, in: terminal.directory, from: terminal)
+            })
             menu.addItem(SuperNodeMenuItem(title: "New Note for This Node") { [weak self] in self?.addNote(for: terminal) })
             menu.addItem(SuperNodeMenuItem(title: "Open Folder in a New Tab") { [weak self] in self?.openInTab(terminal) })
         }
@@ -725,6 +734,62 @@ final class SuperNodeCanvasView: NSView {
             height: size.height)
         guard let note = addNode(.note, frame: frame) else { return }
         connect(note, to: terminal, label: "context")
+    }
+
+    /// Asks for files to open in editor nodes.
+    func openFile(at point: CGPoint?, in directory: String? = nil, from source: SuperNodeNodeView? = nil) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        if let directory { panel.directoryURL = URL(fileURLWithPath: directory) }
+        guard panel.runModal() == .OK else { return }
+        for (index, url) in panel.urls.enumerated() {
+            if let source {
+                openEditor(path: url.path, line: nil, from: source)
+            } else {
+                let center = point ?? visibleCenter
+                addEditor(path: url.path, at: CGPoint(x: center.x + CGFloat(index) * 30, y: center.y + CGFloat(index) * 30))
+            }
+        }
+    }
+
+    @discardableResult
+    private func addEditor(path: String, at point: CGPoint? = nil, frame: CGRect? = nil) -> SuperNodeEditorView? {
+        let size = SuperNodeItem.Kind.editor.defaultSize
+        let center = point ?? visibleCenter
+        var item = SuperNodeItem(
+            kind: .editor,
+            frame: frame ?? CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height))
+        item.file = path
+        guard let view = addNodeView(for: item, restoring: false) as? SuperNodeEditorView else { return nil }
+        select(node: view)
+        documentDidChange()
+        return view
+    }
+
+    /// Opens a file in an editor node beside `source` and connects them, or
+    /// shows the editor that already has it.
+    func openEditor(path: String, line: Int?, from source: SuperNodeNodeView) {
+        let editor: SuperNodeEditorView
+        if let existing = nodeViews.first(where: { ($0 as? SuperNodeEditorView)?.path == path }) as? SuperNodeEditorView {
+            editor = existing
+            select(node: editor)
+        } else {
+            // Stack editors to the right of the source, below any already there.
+            let size = SuperNodeItem.Kind.editor.defaultSize
+            let x = source.item.frame.maxX + 80
+            let below = nodeViews
+                .filter { $0.item.kind == .editor && abs($0.item.frame.minX - x) < 1 }
+                .map(\.item.frame.maxY)
+                .max()
+            let frame = CGRect(x: x, y: below.map { $0 + 40 } ?? source.item.frame.minY, width: size.width, height: size.height)
+            guard let view = addEditor(path: path, frame: frame) else { return }
+            editor = view
+            connect(source, to: editor)
+        }
+        if let line { editor.go(toLine: line) }
+        editor.focus()
     }
 
     /// The folder of the terminal connected into a diff node, if any.
@@ -927,6 +992,14 @@ final class SuperNodeCanvasView: NSView {
     }
 
     private func refreshDiffs() {
+        for node in nodeViews {
+            (node as? SuperNodeDiffView)?.reload()
+            (node as? SuperNodeEditorView)?.checkDisk()
+        }
+    }
+
+    /// An editor saved a file: show the change in diffs right away.
+    func fileDidSave() {
         for case let diff as SuperNodeDiffView in nodeViews { diff.reload() }
     }
 
@@ -955,9 +1028,44 @@ final class SuperNodeCanvasView: NSView {
         SuperNodeStore.save(document)
     }
 
+    // MARK: Dropping files
+
+    // Files dropped on the canvas open in editors; folders open terminals there.
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        fileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        fileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = fileURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+        let point = world.convert(sender.draggingLocation, from: nil)
+        for (index, url) in urls.enumerated() {
+            let at = CGPoint(x: point.x + CGFloat(index) * 30, y: point.y + CGFloat(index) * 30)
+            var isDirectory: ObjCBool = false
+            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            if isDirectory.boolValue {
+                addNode(.terminal, at: at, directory: url.path)
+            } else {
+                addEditor(path: url.path, at: at)
+            }
+        }
+        return true
+    }
+
+    private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
+
     // MARK: Helpers
 
-    private func prompt(title: String, message: String?, value: String, completion: @escaping (String) -> Void) {
+    func prompt(title: String, message: String?, value: String, completion: @escaping (String) -> Void) {
         let alert = NSAlert()
         alert.messageText = title
         if let message { alert.informativeText = message }
@@ -1019,6 +1127,7 @@ struct SuperNodeDock: View {
             .help("New agent")
             button("note.text", "New note") { canvas?.addNode(.note) }
             button("plusminus", "New diff") { canvas?.addDiff(at: nil) }
+            button("doc.text", "Open a file") { canvas?.openFile(at: nil) }
             button("square.dashed", "New group") { canvas?.addNode(.group) }
 
             Divider().frame(height: 18).padding(.horizontal, 6)
@@ -1068,7 +1177,7 @@ private struct SuperNodeEmptyHint: View {
                 .foregroundStyle(.secondary)
             Text("SuperNode")
                 .font(.title2.weight(.semibold))
-            Text("Double-click for a terminal, right-click for more.\nDrag the link icon on a node to another node to connect them.")
+            Text("Double-click for a terminal, right-click for more, or drop files and folders here.\nDrag the link icon on a node to another node to connect them.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

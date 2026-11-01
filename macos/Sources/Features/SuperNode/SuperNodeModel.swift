@@ -17,7 +17,7 @@ struct SuperNodeDocument: Codable {
 /// One node on the canvas.
 struct SuperNodeItem: Codable, Identifiable, Equatable {
     enum Kind: String, Codable {
-        case terminal, agent, note, diff, group
+        case terminal, agent, note, diff, group, editor
 
         var symbol: String {
             switch self {
@@ -26,6 +26,7 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
             case .note: "note.text"
             case .diff: "plusminus"
             case .group: "square.dashed"
+            case .editor: "doc.text"
             }
         }
 
@@ -35,6 +36,7 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
             case .note: CGSize(width: 260, height: 200)
             case .diff: CGSize(width: 580, height: 460)
             case .group: CGSize(width: 900, height: 560)
+            case .editor: CGSize(width: 620, height: 480)
             }
         }
 
@@ -44,6 +46,7 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
             case .note: CGSize(width: 160, height: 100)
             case .diff: CGSize(width: 280, height: 160)
             case .group: CGSize(width: 200, height: 120)
+            case .editor: CGSize(width: 240, height: 140)
             }
         }
     }
@@ -64,6 +67,9 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
 
     /// The contents of a note.
     var text: String?
+
+    /// The file an editor node shows.
+    var file: String?
 }
 
 /// A connection between two nodes, showing how they relate.
