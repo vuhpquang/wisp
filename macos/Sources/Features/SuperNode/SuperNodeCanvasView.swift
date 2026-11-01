@@ -63,6 +63,8 @@ final class SuperNodeCanvasView: NSView {
     private var nextZOrder = 0
     private var saveWork: DispatchWorkItem?
     private var diffTimer: Timer?
+    private var scrollbackTimer: Timer?
+    private var readingPanes = false
 
     static let zoomRange: ClosedRange<CGFloat> = 0.15...1.5
 
@@ -91,9 +93,17 @@ final class SuperNodeCanvasView: NSView {
         ])
 
         registerForDraggedTypes([.fileURL])
+        if SuperNodeTmux.executable != nil { SuperNodeTmux.writeConfig() }
 
         for item in document.nodes {
             addNodeView(for: item, restoring: true)
+        }
+        if SuperNodeTmux.executable != nil {
+            SuperNodeTmux.removeOrphans(keeping: Set(document.nodes.map(\.id)))
+        }
+        // Keep the saved scrollback recent in case the Mac restarts without quitting Wisp.
+        scrollbackTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+            self?.saveScrollback(waiting: false)
         }
         model.zoom = document.zoom
         updateEmptyState()
@@ -441,6 +451,19 @@ final class SuperNodeCanvasView: NSView {
         menu.addItem(item("New Group", "square.dashed") { [weak self] in self?.addNode(.group, at: point) })
         menu.addItem(.separator())
         menu.addItem(item("Zoom to Fit", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.zoomToFit() })
+
+        menu.addItem(.separator())
+        if SuperNodeTmux.executable == nil {
+            let missing = NSMenuItem(title: "Install tmux to Keep Terminals Running After Quit", action: nil, keyEquivalent: "")
+            missing.isEnabled = false
+            menu.addItem(missing)
+        } else {
+            let keep = SuperNodeMenuItem(title: "Keep New Terminals Running After Quit") {
+                SuperNodeTmux.setEnabled(!SuperNodeTmux.isEnabled)
+            }
+            keep.state = SuperNodeTmux.isEnabled ? .on : .off
+            menu.addItem(keep)
+        }
         return menu
     }
 
@@ -516,15 +539,35 @@ final class SuperNodeCanvasView: NSView {
             var config = baseConfig ?? Ghostty.SurfaceConfiguration()
             if let directory = item.directory { config.workingDirectory = directory }
             // Lets the hook script tell Wisp which node an agent runs in.
-            config.environmentVariables[SuperNodeHooks.nodeVariable] = item.id.uuidString
-            config.environmentVariables[SuperNodeHooks.directoryVariable] = SuperNodeHooks.directory.path
-            if item.kind == .agent, let agent = item.agent {
+            let environment = [
+                SuperNodeHooks.nodeVariable: item.id.uuidString,
+                SuperNodeHooks.directoryVariable: SuperNodeHooks.directory.path,
+            ]
+            config.environmentVariables.merge(environment) { $1 }
+
+            // In tmux, a session still running from before Wisp quit is
+            // attached as it is, even if new terminals no longer use tmux;
+            // otherwise the node starts fresh, printing the scrollback saved
+            // before a restart.
+            let running = restoring && SuperNodeTmux.executable != nil && SuperNodeTmux.hasSession(item.id)
+            let usesTmux = running || SuperNodeTmux.isEnabled
+            if usesTmux {
+                let snapshot = SuperNodeTmux.scrollbackURL(item.id)
+                let replay = !running && restoring && FileManager.default.fileExists(atPath: snapshot.path)
+                config.command = SuperNodeTmux.attachCommand(
+                    for: item.id,
+                    directory: item.directory,
+                    environment: environment,
+                    replay: replay ? snapshot : nil)
+            }
+
+            if item.kind == .agent, let agent = item.agent, !running {
                 // Typed into the shell rather than run as the command, so the
                 // shell stays when the agent exits.
                 config.initialInput = agent.command(resuming: restoring, sessionID: item.sessionID) + "\n"
             }
             let surface = SuperNodeSurfaceView(app, baseConfig: config)
-            view = SuperNodeTerminalView(item: item, surface: surface, ghostty: ghostty)
+            view = SuperNodeTerminalView(item: item, surface: surface, ghostty: ghostty, usesTmux: usesTmux)
         case .note:
             view = SuperNodeNoteView(item: item)
         case .diff:
@@ -846,7 +889,7 @@ final class SuperNodeCanvasView: NSView {
     /// Pastes the recent output of one terminal into another, so an agent can
     /// see what the other terminal is doing.
     private func sendOutput(from source: SuperNodeTerminalView, to target: SuperNodeTerminalView) {
-        var lines = source.surface.cachedScreenContents.get()
+        var lines = source.recentOutput(lines: 200)
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) }
         while let last = lines.last, last.isEmpty { lines.removeLast() }
@@ -964,7 +1007,7 @@ final class SuperNodeCanvasView: NSView {
         case .down: frame.origin.y = frame.maxY + gap
         case .up: frame.origin.y = frame.minY - frame.height - gap
         }
-        guard let node = addNode(.terminal, baseConfig: config, frame: frame) else { return }
+        guard let node = addNode(.terminal, directory: source.directory, baseConfig: config, frame: frame) else { return }
         connect(source, to: node)
     }
 
@@ -972,7 +1015,7 @@ final class SuperNodeCanvasView: NSView {
     func newTerminal(near surface: Ghostty.SurfaceView, config: Ghostty.SurfaceConfiguration?) {
         guard let source = terminalNodes.first(where: { $0.surface === surface }) else { return }
         let frame = source.item.frame.offsetBy(dx: 40, dy: 40)
-        addNode(.terminal, baseConfig: config, frame: frame)
+        addNode(.terminal, directory: source.directory, baseConfig: config, frame: frame)
     }
 
     func close(surface: Ghostty.SurfaceView, confirm: Bool) {
@@ -998,6 +1041,7 @@ final class SuperNodeCanvasView: NSView {
     }
 
     private func refreshDiffs() {
+        readPanes()
         for node in nodeViews {
             (node as? SuperNodeDiffView)?.reload()
             (node as? SuperNodeEditorView)?.checkDisk()
@@ -1137,6 +1181,44 @@ final class SuperNodeCanvasView: NSView {
     func setColumns(_ columns: [SuperNodeColumn]) {
         document.columns = columns
         documentDidChange()
+    }
+
+    // MARK: tmux
+
+    /// Reads each tmux pane's folder and program: a shell in tmux can't tell
+    /// the terminal its folder the way it does outside tmux.
+    private func readPanes() {
+        let nodes = terminalNodes.filter(\.usesTmux)
+        guard !nodes.isEmpty, !readingPanes else { return }
+        readingPanes = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let panes = SuperNodeTmux.panes()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.readingPanes = false
+                for node in nodes {
+                    guard let pane = panes[node.item.id] else { continue }
+                    node.paneCommand = pane.command
+                    if !pane.path.isEmpty, pane.path != node.item.directory {
+                        node.item.directory = pane.path
+                        node.refreshHeader()
+                        self.documentDidChange()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Saves tmux scrollback so terminals come back after the Mac restarts.
+    /// Waits when Wisp is about to quit.
+    func saveScrollback(waiting: Bool) {
+        let ids = terminalNodes.filter(\.usesTmux).map(\.item.id)
+        guard !ids.isEmpty else { return }
+        if waiting {
+            SuperNodeTmux.saveScrollback(of: ids)
+        } else {
+            DispatchQueue.global(qos: .utility).async { SuperNodeTmux.saveScrollback(of: ids) }
+        }
     }
 
     // MARK: Saving

@@ -400,6 +400,10 @@ final class SuperNodeResizeGrip: NSView {
 /// a coding agent.
 final class SuperNodeTerminalView: SuperNodeNodeView {
     let surface: Ghostty.SurfaceView
+    /// Whether the terminal runs in its own tmux session and outlives Wisp.
+    let usesTmux: Bool
+    /// The program in the tmux pane, such as zsh or claude, read every few seconds.
+    var paneCommand: String?
     private var cancellables: Set<AnyCancellable> = []
     private var headerRefreshPending = false
     private var approvalBar: NSHostingView<SuperNodeApprovalBar>?
@@ -414,8 +418,9 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
         }
     }
 
-    init(item: SuperNodeItem, surface: Ghostty.SurfaceView, ghostty: Ghostty.App) {
+    init(item: SuperNodeItem, surface: Ghostty.SurfaceView, ghostty: Ghostty.App, usesTmux: Bool) {
         self.surface = surface
+        self.usesTmux = usesTmux
         super.init(item: item)
 
         let wrapper = Ghostty.SurfaceWrapper(surfaceView: surface, isSplit: false)
@@ -566,7 +571,15 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
     }
 
     override var needsConfirmClose: Bool {
-        surface.needsConfirmQuit
+        // The tmux client is always in the foreground, so ask tmux what runs.
+        guard usesTmux else { return surface.needsConfirmQuit }
+        return paneCommand.map { !SuperNodeTmux.isShell($0) } ?? true
+    }
+
+    /// Recent output, including what scrolled out of view.
+    func recentOutput(lines: Int) -> String {
+        if usesTmux, let output = SuperNodeTmux.capture(item.id, lines: lines) { return output }
+        return surface.cachedScreenContents.get()
     }
 
     @objc private func showChanges() {
@@ -575,6 +588,8 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
 
     override func tearDown() {
         cancellables.removeAll()
+        // Closing the node ends its session; quitting Wisp leaves it running.
+        if usesTmux { SuperNodeTmux.kill(item.id) }
     }
 }
 

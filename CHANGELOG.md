@@ -35,8 +35,12 @@ take the version from the first heading.
   canvas (dropped folders open a terminal there). When an agent changes an open file, the editor
   reloads it, or marks it CHANGED ON DISK if you have unsaved edits.
 - Pan by scrolling or dragging the canvas, zoom by pinching or ⌘-scrolling. Moving a group moves
-  the nodes inside it. The canvas is saved, and terminals reopen in their folders after a
-  relaunch, with agents resuming their last conversation.
+  the nodes inside it. The canvas is saved between launches.
+- With tmux installed, every terminal on the canvas runs in its own tmux session and keeps
+  running when you quit Wisp: open Wisp again and the node is right where it was, agent and all.
+  Its scrollback is saved too, so after the Mac restarts the node comes back in its folder with
+  its history, and agents resume their conversation. Closing a node ends its session. Turn it off
+  for new terminals by right-clicking the canvas. Your own tmux and ~/.tmux.conf aren't touched.
 
 ## 0.2.4 - 2026-10-26
 

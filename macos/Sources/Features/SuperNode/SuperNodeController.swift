@@ -178,6 +178,7 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
 
     @objc private func appWillTerminate(_ notification: Notification) {
         canvas?.save()
+        canvas?.saveScrollback(waiting: true)
     }
 
     /// A terminal on the canvas, for notifications to find when clicked.
