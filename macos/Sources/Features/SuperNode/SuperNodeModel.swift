@@ -12,6 +12,9 @@ struct SuperNodeDocument: Codable {
     /// The board's columns. Optional so canvases saved before the board load.
     var boardColumns: [SuperNodeColumn]?
 
+    /// The chat panel's conversation.
+    var chat: SuperNodeChatModel.Saved?
+
     var columns: [SuperNodeColumn] {
         get { boardColumns ?? SuperNodeColumn.defaults }
         set { boardColumns = newValue }

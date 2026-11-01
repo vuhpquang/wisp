@@ -120,6 +120,13 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
             projects = index.projects
             SuperNodeHookCenter.shared.onEvent = { [weak self] event in self?.route(event) }
             SuperNodeHookCenter.shared.start()
+            // `supernode` commands go to the project they name, or the current one.
+            SuperNodeCommandCenter.shared.canvasFor = { [weak self] project in
+                guard let self else { return nil }
+                if let id = UUID(uuidString: project), let canvas = self.canvases[id] { return canvas }
+                return self.canvas
+            }
+            SuperNodeCommandCenter.shared.start()
             switchTo(index.current.flatMap { id in index.projects.contains { $0.id == id } ? id : nil } ?? index.projects[0].id)
             // Sessions whose node is in no project are left over; end them.
             if SuperNodeTmux.executable != nil {
@@ -390,6 +397,10 @@ final class SuperNodeWindow: NSWindow {
         }
         if flags == .command, key == "k", let canvas = SuperNodeController.shared.canvas {
             canvas.showPalette()
+            return true
+        }
+        if flags == .command, key == "j", let canvas = SuperNodeController.shared.canvas {
+            canvas.toggleChat()
             return true
         }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],

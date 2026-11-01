@@ -30,6 +30,7 @@ final class SuperNodeCanvasModel: ObservableObject {
     @Published var isEmpty = true
     @Published var isBoard = false
     @Published var showsMinimap = UserDefaults.standard.object(forKey: SuperNodeMinimap.visibleKey) as? Bool ?? true
+    @Published var showsChat = false
 }
 
 /// Holds the node views. Its bounds are scaled and offset to pan and zoom.
@@ -57,6 +58,9 @@ final class SuperNodeCanvasView: NSView {
     private var boardHost: NSView?
     private var emptyHint: NSView!
     private let minimap = SuperNodeMinimap()
+    let chat = SuperNodeChatModel()
+    private var chatPanel: NSView?
+    private var minimapTrailing: NSLayoutConstraint?
 
     private var selectedEdge: UUID?
     private var linkDrag: (from: SuperNodeNodeView, to: CGPoint)?
@@ -103,11 +107,18 @@ final class SuperNodeCanvasView: NSView {
             hint.centerYAnchor.constraint(equalTo: centerYAnchor),
             dock.centerXAnchor.constraint(equalTo: centerXAnchor),
             dock.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
-            minimap.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             minimap.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
             minimap.widthAnchor.constraint(equalToConstant: SuperNodeMinimap.size.width),
             minimap.heightAnchor.constraint(equalToConstant: SuperNodeMinimap.size.height),
         ])
+
+        let trailing = minimap.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14)
+        trailing.isActive = true
+        minimapTrailing = trailing
+
+        chat.canvas = self
+        chat.restore(document.chat)
+        chat.onChange = { [weak self] in self?.documentDidChange() }
 
         registerForDraggedTypes([.fileURL])
         if SuperNodeTmux.executable != nil { SuperNodeTmux.writeConfig() }
@@ -148,6 +159,29 @@ final class SuperNodeCanvasView: NSView {
         document.origin = CGPoint(x: point.x - visible.width / 2, y: point.y - visible.height / 2)
         applyTransform()
         scheduleSave()
+    }
+
+    /// Shows or hides the chat panel at the right of the canvas.
+    func toggleChat() {
+        model.showsChat.toggle()
+        if model.showsChat {
+            let panel = NSHostingView(rootView: SuperNodeChatPanel(chat: chat) { [weak self] in self?.toggleChat() })
+            panel.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(panel)
+            NSLayoutConstraint.activate([
+                panel.topAnchor.constraint(equalTo: topAnchor),
+                panel.bottomAnchor.constraint(equalTo: bottomAnchor),
+                panel.trailingAnchor.constraint(equalTo: trailingAnchor),
+                panel.widthAnchor.constraint(equalToConstant: SuperNodeChatPanel.width),
+            ])
+            chatPanel = panel
+        } else {
+            chatPanel?.removeFromSuperview()
+            chatPanel = nil
+            window?.makeFirstResponder(self)
+        }
+        // Keep the minimap clear of the panel.
+        minimapTrailing?.constant = model.showsChat ? -(SuperNodeChatPanel.width + 14) : -14
     }
 
     func toggleMinimap() {
@@ -218,7 +252,7 @@ final class SuperNodeCanvasView: NSView {
         zoom(to: rect)
     }
 
-    private func zoom(to rect: CGRect) {
+    func zoom(to rect: CGRect) {
         let rect = rect.insetBy(dx: -60, dy: -60)
         let available = NSSize(width: bounds.width, height: bounds.height - 70)
         let zoom = min(
@@ -880,7 +914,7 @@ final class SuperNodeCanvasView: NSView {
     }
 
     @discardableResult
-    private func addEditor(path: String, at point: CGPoint? = nil, frame: CGRect? = nil) -> SuperNodeEditorView? {
+    func addEditor(path: String, at point: CGPoint? = nil, frame: CGRect? = nil) -> SuperNodeEditorView? {
         let size = SuperNodeItem.Kind.editor.defaultSize
         let center = point ?? visibleCenter
         var item = SuperNodeItem(
@@ -1040,7 +1074,7 @@ final class SuperNodeCanvasView: NSView {
         documentDidChange()
     }
 
-    private func removeEdge(_ id: UUID) {
+    func removeEdge(_ id: UUID) {
         checkpoint("Delete Connection")
         document.edges.removeAll { $0.id == id }
         if selectedEdge == id { selectedEdge = nil }
@@ -1374,6 +1408,7 @@ final class SuperNodeCanvasView: NSView {
         command("New Group", "square.dashed") { [weak self] in self?.addNode(.group) }
         command(model.isBoard ? "Show Canvas" : "Show Board", "rectangle.split.3x1") { [weak self] in self?.toggleBoard() }
         command("Zoom to Fit", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.zoomToFit() }
+        command(model.showsChat ? "Hide Chat" : "Show Chat", "bubble.left.and.text.bubble.right") { [weak self] in self?.toggleChat() }
         command(model.showsMinimap ? "Hide Minimap" : "Show Minimap", "map") { [weak self] in self?.toggleMinimap() }
         if history.canUndo {
             command("Undo " + history.undoActionName, "arrow.uturn.backward") { [weak self] in self?.history.undo() }
@@ -1829,6 +1864,7 @@ final class SuperNodeCanvasView: NSView {
         saveWork?.cancel()
         saveWork = nil
         document.nodes = nodeViews.map(\.item)
+        document.chat = chat.saved
         SuperNodeStore.save(document, project: projectID)
         updateLinks()
     }
@@ -1960,6 +1996,13 @@ struct SuperNodeDock: View {
                 button(model.showsMinimap ? "map.fill" : "map", model.showsMinimap ? "Hide the minimap" : "Show the minimap") {
                     canvas?.toggleMinimap()
                 }
+            }
+
+            Divider().frame(height: 18).padding(.horizontal, 6)
+
+            button(model.showsChat ? "bubble.left.and.text.bubble.right.fill" : "bubble.left.and.text.bubble.right",
+                   model.showsChat ? "Hide the chat (⌘J)" : "Ask Claude to change the canvas (⌘J)") {
+                canvas?.toggleChat()
             }
         }
         .padding(.horizontal, 8)
