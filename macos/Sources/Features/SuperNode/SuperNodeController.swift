@@ -12,6 +12,8 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
     /// Whether the SuperNode window is showing.
     @Published private(set) var isActive = false
 
+    private static let frameName = "WispSuperNodeWindow"
+
     private var canvas: SuperNodeCanvasView?
 
     /// The terminal window SuperNode was turned on from, shown again when it's
@@ -35,7 +37,12 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
         window.tabbingMode = .disallowed
         window.minSize = NSSize(width: 480, height: 320)
         window.collectionBehavior.insert(.fullScreenPrimary)
-        window.center()
+        // The SuperNode window keeps its own size and place, apart from
+        // terminal windows; the first time it nearly fills the screen.
+        if !window.setFrameUsingName(Self.frameName), let screen = NSScreen.main {
+            window.setFrame(screen.visibleFrame.insetBy(dx: screen.visibleFrame.width * 0.04, dy: screen.visibleFrame.height * 0.04), display: false)
+        }
+        window.setFrameAutosaveName(Self.frameName)
         super.init(window: window)
         window.delegate = self
 
@@ -66,7 +73,7 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
     }
 
     /// Shows or hides the SuperNode window. `source` is the terminal window the
-    /// toggle was used in; SuperNode opens over it at the same size.
+    /// toggle was used in, shown again when SuperNode is turned off.
     func setActive(_ active: Bool, from source: NSWindow? = nil) {
         if active {
             show(from: source)
@@ -81,9 +88,6 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
         let source = source ?? NSApp.keyWindow ?? NSApp.mainWindow
         if let source, source !== window, source.windowController is BaseTerminalController {
             returnWindow = source
-            if !source.styleMask.contains(.fullScreen) {
-                window.setFrame(source.frame, display: false)
-            }
         }
 
         if canvas == nil {

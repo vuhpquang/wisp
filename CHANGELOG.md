@@ -9,7 +9,8 @@ take the version from the first heading.
 ### SuperNode mode
 - Turn on the SuperNode switch in the top-right corner of a window (or Window > SuperNode Mode,
   ⌃⌘N) to see your terminals as nodes on an infinite canvas. Turn it off to go back to your tabs;
-  the canvas and everything running on it stays.
+  the canvas and everything running on it stays. The SuperNode window keeps its own size and
+  place, separate from your terminal windows.
 - Add terminals, Claude Code, Codex and Gemini agents, notes, diffs and groups from the bar at the
   bottom, by right-clicking the canvas, or by double-clicking it for a terminal.
 - Drag the link icon on a node to another node to connect them, and double-click a connection to
@@ -27,10 +28,11 @@ take the version from the first heading.
 - Splitting a terminal (⌘D) opens a connected node beside it; ⌘T opens a new node and ⌘W
   closes one.
 - A diff node works like an editor's source control panel: it lists staged changes and changes,
-  shows the patch of the file you pick, and stages, unstages or discards a file or everything
-  (new files go to the Trash). Commit from its message field, push, pull, and switch or create
+  shows the patch of the file you pick with line numbers and code colors, and stages, unstages or
+  discards a single hunk, a file or everything (new files go to the Trash). Commit from its message field, push, pull, and switch or create
   branches. Click ± on a terminal to open one for its folder; it refreshes as you work.
-- Editor nodes open files with line numbers. ⌘S saves, ⌘F finds. Double-click a file in a diff to
+- Editor nodes open files with line numbers and code colors for common languages. ⌘S saves,
+  ⌘F finds. Double-click a file in a diff to
   open it at its first change, open files from the bar or a terminal's menu, or drop files on the
   canvas (dropped folders open a terminal there). When an agent changes an open file, the editor
   reloads it, or marks it CHANGED ON DISK if you have unsaved edits.

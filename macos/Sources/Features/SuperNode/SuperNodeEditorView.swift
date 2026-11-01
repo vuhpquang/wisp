@@ -12,6 +12,11 @@ final class SuperNodeEditorView: SuperNodeNodeView, NSTextViewDelegate {
     private var changedOnDisk = false
     /// Why the file can't be edited, such as being binary.
     private var loadError: String?
+    private var syntax: SuperNodeSyntax?
+    private var highlightWork: DispatchWorkItem?
+
+    /// Larger files aren't colored, so typing stays fast.
+    private static let maxHighlightLength = 500_000
 
     /// Larger files open read-only so typing stays fast.
     private static let maxEditableSize = 2_000_000
@@ -112,6 +117,7 @@ final class SuperNodeEditorView: SuperNodeNodeView, NSTextViewDelegate {
             refreshHeader()
         }
         guard let path else { return }
+        syntax = SuperNodeSyntax.forFile(path)
         guard let data = FileManager.default.contents(atPath: path) else {
             loadError = "Couldn't read the file"
             setText("Couldn't read \(path).", editable: false)
@@ -144,6 +150,29 @@ final class SuperNodeEditorView: SuperNodeNodeView, NSTextViewDelegate {
         }
         textView.scrollToVisible(visible)
         scrollView.verticalRulerView?.needsDisplay = true
+        highlight()
+    }
+
+    // MARK: Syntax colors
+
+    /// Colors the code. Temporary attributes only change how the text looks,
+    /// so they never reach the undo stack or the saved file.
+    private func highlight() {
+        guard let layoutManager = textView.layoutManager else { return }
+        let text = textView.string as NSString
+        let all = NSRange(location: 0, length: text.length)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: all)
+        guard let syntax, loadError == nil, text.length <= Self.maxHighlightLength else { return }
+        for (range, token) in syntax.tokens(in: text, range: all) {
+            layoutManager.addTemporaryAttribute(.foregroundColor, value: token.color, forCharacterRange: range)
+        }
+    }
+
+    private func scheduleHighlight() {
+        highlightWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.highlight() }
+        highlightWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     @objc func saveNow() {
@@ -214,6 +243,7 @@ final class SuperNodeEditorView: SuperNodeNodeView, NSTextViewDelegate {
     }
 
     func textDidChange(_ notification: Notification) {
+        scheduleHighlight()
         let dirty = textView.string != savedText
         if dirty != isDirty {
             isDirty = dirty

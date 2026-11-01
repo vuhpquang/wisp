@@ -18,7 +18,7 @@ enum SuperNodeGit {
     }
 
     /// Runs git in `directory` and waits for it. Call this off the main thread.
-    static func run(_ arguments: [String], in directory: String) -> Result {
+    static func run(_ arguments: [String], in directory: String, input: String? = nil) -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", directory] + arguments
@@ -32,11 +32,16 @@ enum SuperNodeGit {
         let output = Pipe(), error = Pipe()
         process.standardOutput = output
         process.standardError = error
-        process.standardInput = FileHandle.nullDevice
+        let stdin = Pipe()
+        process.standardInput = input == nil ? FileHandle.nullDevice : stdin
         do {
             try process.run()
         } catch {
             return Result(status: -1, output: "", error: error.localizedDescription)
+        }
+        if let input {
+            stdin.fileHandleForWriting.write(Data(input.utf8))
+            try? stdin.fileHandleForWriting.close()
         }
         // Read both pipes while git runs so a large output can't fill one and block it.
         var errorData = Data()
@@ -223,44 +228,6 @@ enum SuperNodeGit {
         }
         return nil
     }
-
-    static func render(patch: String) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        let mono = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-        let monoBold = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
-
-        func append(_ string: String, font: NSFont = mono, color: NSColor, background: NSColor? = nil) {
-            var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-            if let background { attributes[.backgroundColor] = background }
-            result.append(NSAttributedString(string: string, attributes: attributes))
-        }
-
-        if patch.isEmpty {
-            append("No changes.\n", font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
-            return result
-        }
-
-        var first = true
-        for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-            let text = String(line) + "\n"
-            if line.hasPrefix("diff --git") {
-                if !first { append("\n", color: .labelColor) }
-                first = false
-                append(text, font: monoBold, color: .labelColor)
-            } else if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("index ") || line.hasPrefix("new file") {
-                append(text, color: .tertiaryLabelColor)
-            } else if line.hasPrefix("@@") {
-                append(text, color: .systemCyan)
-            } else if line.hasPrefix("+") {
-                append(text, color: .systemGreen, background: NSColor.systemGreen.withAlphaComponent(0.08))
-            } else if line.hasPrefix("-") {
-                append(text, color: .systemRed, background: NSColor.systemRed.withAlphaComponent(0.08))
-            } else {
-                append(text, color: .secondaryLabelColor)
-            }
-        }
-        return result
-    }
 }
 
 // MARK: - Model
@@ -271,7 +238,8 @@ final class SuperNodeGitModel: ObservableObject {
     @Published private(set) var status = SuperNodeGit.Status()
     @Published private(set) var branches: [String] = []
     @Published private(set) var selection: SuperNodeGit.Change?
-    @Published private(set) var patch = NSAttributedString()
+    /// The shown patch, by file and hunk.
+    @Published private(set) var files: [SuperNodePatchFile] = []
     /// Changes when the shown patch is for something else, so the view
     /// scrolls back to the top.
     @Published private(set) var patchID = UUID()
@@ -294,7 +262,7 @@ final class SuperNodeGitModel: ObservableObject {
         selection = nil
         status = SuperNodeGit.Status()
         patchText = ""
-        patch = NSAttributedString()
+        files = []
         patchID = UUID()
         refresh()
     }
@@ -336,7 +304,7 @@ final class SuperNodeGitModel: ObservableObject {
     private func showPatch(_ text: String, newTarget: Bool) {
         guard text != patchText || newTarget else { return }
         patchText = text
-        patch = SuperNodeGit.render(patch: text)
+        files = SuperNodePatchFile.parse(text)
         if newTarget { patchID = UUID() }
     }
 
@@ -350,7 +318,7 @@ final class SuperNodeGitModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.selection == change else { return }
                 self.patchText = patch
-                self.patch = SuperNodeGit.render(patch: patch)
+                self.files = SuperNodePatchFile.parse(patch)
                 self.patchID = UUID()
             }
         }
@@ -446,12 +414,28 @@ final class SuperNodeGitModel: ObservableObject {
         perform(["switch", "-c", name])
     }
 
+    enum HunkAction {
+        case stage, unstage, discard
+    }
+
+    /// Stages, unstages or discards one hunk by applying it as a patch to the
+    /// index or the working tree.
+    func apply(_ action: HunkAction, hunk: SuperNodePatchFile.Hunk, of file: SuperNodePatchFile) {
+        let arguments: [String]
+        switch action {
+        case .stage: arguments = ["apply", "--cached", "--whitespace=nowarn", "-"]
+        case .unstage: arguments = ["apply", "--cached", "--reverse", "--whitespace=nowarn", "-"]
+        case .discard: arguments = ["apply", "--reverse", "--whitespace=nowarn", "-"]
+        }
+        perform(arguments, input: file.patch(for: hunk))
+    }
+
     /// Runs a git command that changes the repository, then refreshes.
-    private func perform(_ arguments: [String], success: String? = nil, then: (() -> Void)? = nil) {
+    private func perform(_ arguments: [String], input: String? = nil, success: String? = nil, then: (() -> Void)? = nil) {
         guard let directory else { return }
         isBusy = true
         queue.async { [weak self] in
-            let result = SuperNodeGit.run(arguments, in: directory)
+            let result = SuperNodeGit.run(arguments, in: directory, input: input)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isBusy = false
@@ -464,5 +448,102 @@ final class SuperNodeGitModel: ObservableObject {
                 self.refresh()
             }
         }
+    }
+}
+
+// MARK: - Patches
+
+/// One file of a patch, split into hunks so each can be staged on its own.
+struct SuperNodePatchFile: Identifiable, Equatable {
+    struct Hunk: Identifiable, Equatable {
+        /// Unique across the whole patch, since lists flatten files and hunks together.
+        let id: String
+        /// The hunk's place in its file.
+        let index: Int
+        /// The "@@ -a,b +c,d @@" line.
+        let header: String
+        let lines: [String]
+        let oldStart: Int
+        let newStart: Int
+    }
+
+    let id: Int
+    let path: String
+    /// The lines before the first hunk: "diff --git", "index", "---", "+++".
+    let header: [String]
+    let hunks: [Hunk]
+
+    /// Whether git can apply a hunk of this file; synthesized patches for new
+    /// files and binary files can't be.
+    var canApplyHunks: Bool {
+        header.contains { $0.hasPrefix("--- ") } && header.contains { $0.hasPrefix("+++ ") }
+    }
+
+    /// A patch with only one hunk, for `git apply`.
+    func patch(for hunk: Hunk) -> String {
+        (header + [hunk.header] + hunk.lines).joined(separator: "\n") + "\n"
+    }
+
+    static func parse(_ text: String) -> [SuperNodePatchFile] {
+        var files: [SuperNodePatchFile] = []
+        var header: [String] = []
+        var hunks: [Hunk] = []
+        var hunkHeader: String?
+        var hunkLines: [String] = []
+        var path = ""
+
+        func finishHunk() {
+            guard let current = hunkHeader else { return }
+            let (old, new) = starts(of: current)
+            hunks.append(Hunk(id: "\(files.count)-\(hunks.count)", index: hunks.count, header: current, lines: hunkLines, oldStart: old, newStart: new))
+            hunkHeader = nil
+            hunkLines = []
+        }
+
+        func finishFile() {
+            finishHunk()
+            guard !header.isEmpty else { return }
+            files.append(SuperNodePatchFile(id: files.count, path: path, header: header, hunks: hunks))
+            header = []
+            hunks = []
+        }
+
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            if line.hasPrefix("diff --git ") {
+                finishFile()
+                header = [line]
+                path = line.range(of: " b/").map { String(line[$0.upperBound...]) } ?? line
+            } else if line.hasPrefix("@@") {
+                finishHunk()
+                hunkHeader = line
+            } else if hunkHeader != nil {
+                // Context, added, removed, or "\ No newline at end of file".
+                if line.isEmpty && hunkLines.last == nil { continue }
+                hunkLines.append(line)
+            } else if !header.isEmpty {
+                header.append(line)
+                if line.hasPrefix("+++ b/") { path = String(line.dropFirst(6)) }
+            }
+        }
+        finishFile()
+
+        // The patch text ends with a newline, which leaves one empty line.
+        return files.map { file in
+            let hunks = file.hunks.map { hunk -> Hunk in
+                var lines = hunk.lines
+                while let last = lines.last, last.isEmpty { lines.removeLast() }
+                return Hunk(id: hunk.id, index: hunk.index, header: hunk.header, lines: lines, oldStart: hunk.oldStart, newStart: hunk.newStart)
+            }
+            return SuperNodePatchFile(id: file.id, path: file.path, header: file.header, hunks: hunks)
+        }
+    }
+
+    /// The first old and new line numbers in "@@ -12,3 +14,5 @@".
+    private static func starts(of header: String) -> (Int, Int) {
+        func number(after marker: String) -> Int {
+            guard let range = header.range(of: marker) else { return 1 }
+            return Int(header[range.upperBound...].prefix { $0.isNumber }) ?? 1
+        }
+        return (number(after: " -"), number(after: " +"))
     }
 }

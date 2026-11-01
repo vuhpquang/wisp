@@ -17,6 +17,7 @@ final class SuperNodeDiffView: SuperNodeNodeView {
             model: model,
             onOpen: { [weak self] change in self?.open(change) },
             onDiscard: { [weak self] changes in self?.confirmDiscard(changes) },
+            onDiscardHunk: { [weak self] hunk, file in self?.confirmDiscard(hunk, of: file) },
             onNewBranch: { [weak self] in self?.promptNewBranch() })
         body = NSHostingView(rootView: content)
 
@@ -117,6 +118,20 @@ final class SuperNodeDiffView: SuperNodeNodeView {
         }
     }
 
+    private func confirmDiscard(_ hunk: SuperNodePatchFile.Hunk, of file: SuperNodePatchFile) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Discard this change to \((file.path as NSString).lastPathComponent)?"
+        alert.informativeText = "The lines in this hunk go back to how they were in the index."
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.model.apply(.discard, hunk: hunk, of: file)
+        }
+    }
+
     private func promptNewBranch() {
         canvas?.prompt(title: "New Branch", message: "Create a branch from the current one and switch to it.", value: "") { [weak self] name in
             guard !name.isEmpty else { return }
@@ -131,6 +146,7 @@ private struct SuperNodeDiffBody: View {
     @ObservedObject var model: SuperNodeGitModel
     let onOpen: (SuperNodeGit.Change) -> Void
     let onDiscard: ([SuperNodeGit.Change]) -> Void
+    let onDiscardHunk: (SuperNodePatchFile.Hunk, SuperNodePatchFile) -> Void
     let onNewBranch: () -> Void
 
     var body: some View {
@@ -148,7 +164,7 @@ private struct SuperNodeDiffBody: View {
                     VSplitView {
                     fileList
                         .frame(minHeight: 60, idealHeight: 150, maxHeight: .infinity)
-                    SuperNodePatchView(text: model.patch, id: model.patchID)
+                    SuperNodePatchList(model: model, onDiscardHunk: onDiscardHunk)
                         .frame(minHeight: 60, maxHeight: .infinity)
                     }
                 }
@@ -397,49 +413,195 @@ private struct SuperNodeChangeRow: View {
     }
 }
 
-/// A read-only, non-wrapping text view for a patch.
-private struct SuperNodePatchView: NSViewRepresentable {
-    let text: NSAttributedString
-    let id: UUID
+// MARK: - Patch
 
-    final class Coordinator {
-        var id: UUID?
-        var text: NSAttributedString?
-    }
+/// The patch of the selected file, hunk by hunk with line numbers and syntax
+/// colors. A file's hunks can be staged, unstaged or discarded one at a time.
+private struct SuperNodePatchList: View {
+    @ObservedObject var model: SuperNodeGitModel
+    let onDiscardHunk: (SuperNodePatchFile.Hunk, SuperNodePatchFile) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        let textView = scrollView.documentView as! NSTextView
-        scrollView.borderType = .noBorder
-        scrollView.hasHorizontalScroller = true
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.textContainerInset = NSSize(width: 6, height: 6)
-        textView.backgroundColor = .textBackgroundColor
-        textView.isHorizontallyResizable = true
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
-        let coordinator = context.coordinator
-        guard coordinator.text !== text || coordinator.id != id else { return }
-
-        let samePatch = coordinator.id == id
-        let visible = textView.visibleRect
-        coordinator.text = text
-        coordinator.id = id
-        textView.textStorage?.setAttributedString(text)
-        // Keep the scroll position when the same patch refreshes; start at the
-        // top when it's a different file.
-        if samePatch {
-            textView.scrollToVisible(visible)
-        } else {
-            textView.scroll(.zero)
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 0).id("top")
+                    if model.files.isEmpty {
+                        Text("No changes.")
+                            .foregroundStyle(.secondary)
+                            .padding(10)
+                    }
+                    ForEach(model.files) { file in
+                        SuperNodePatchFileView(model: model, file: file, onDiscardHunk: onDiscardHunk)
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+            .background(Color(NSColor.textBackgroundColor))
+            .onChange(of: model.patchID) { _ in proxy.scrollTo("top", anchor: .top) }
         }
+    }
+}
+
+private struct SuperNodePatchFileView: View {
+    @ObservedObject var model: SuperNodeGitModel
+    let file: SuperNodePatchFile
+    let onDiscardHunk: (SuperNodePatchFile.Hunk, SuperNodePatchFile) -> Void
+
+    var body: some View {
+        let syntax = SuperNodeSyntax.forFile(file.path)
+        // Hunk buttons need to know which side the patch came from.
+        let change = model.selection.flatMap { $0.isUntracked ? nil : $0 }
+        let actionable = change != nil && file.canApplyHunks && !model.isBusy
+
+        if model.selection == nil {
+            Text(file.path)
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 8)
+                .padding(.top, 12)
+                .padding(.bottom, 4)
+        }
+        if file.hunks.isEmpty {
+            Text(file.header.contains { $0.hasPrefix("Binary") } ? "Binary file" : "No text changes")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+        }
+        ForEach(file.hunks) { hunk in
+            HStack(spacing: 6) {
+                Text(hunk.header)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color(NSColor.systemCyan))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 6)
+                if actionable, let change {
+                    if change.staged {
+                        hunkButton("Unstage", "minus") { model.apply(.unstage, hunk: hunk, of: file) }
+                    } else {
+                        hunkButton("Discard", "arrow.uturn.backward") { onDiscardHunk(hunk, file) }
+                        hunkButton("Stage", "plus") { model.apply(.stage, hunk: hunk, of: file) }
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color(NSColor.systemCyan).opacity(0.08))
+            .padding(.top, hunk.index == 0 ? 2 : 8)
+
+            ForEach(SuperNodePatchRow.rows(of: hunk)) { row in
+                SuperNodePatchRowView(row: row, syntax: syntax)
+            }
+        }
+    }
+
+    private func hunkButton(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 10, weight: .medium))
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .help("\(title) this hunk")
+    }
+}
+
+/// One line of a hunk with its old and new line numbers.
+private struct SuperNodePatchRow: Identifiable {
+    enum Kind { case context, added, removed, note }
+
+    /// Unique across the patch: rows of every hunk share one lazy list.
+    let id: String
+    let kind: Kind
+    let old: Int?
+    let new: Int?
+    let text: String
+
+    static func rows(of hunk: SuperNodePatchFile.Hunk) -> [SuperNodePatchRow] {
+        var old = hunk.oldStart, new = hunk.newStart
+        var rows: [SuperNodePatchRow] = []
+        for (offset, line) in hunk.lines.enumerated() {
+            let index = "\(hunk.id)-\(offset)"
+            let body = String(line.dropFirst())
+            switch line.first ?? " " {
+            case "+":
+                rows.append(SuperNodePatchRow(id: index, kind: .added, old: nil, new: new, text: body))
+                new += 1
+            case "-":
+                rows.append(SuperNodePatchRow(id: index, kind: .removed, old: old, new: nil, text: body))
+                old += 1
+            case "\\":
+                rows.append(SuperNodePatchRow(id: index, kind: .note, old: nil, new: nil, text: line))
+            default:
+                rows.append(SuperNodePatchRow(id: index, kind: .context, old: old, new: new, text: body))
+                old += 1
+                new += 1
+            }
+        }
+        return rows
+    }
+}
+
+private struct SuperNodePatchRowView: View {
+    let row: SuperNodePatchRow
+    let syntax: SuperNodeSyntax?
+
+    private static let font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            number(row.old)
+            number(row.new)
+            Text(marker)
+                .foregroundStyle(markerColor)
+                .frame(width: 16)
+            Text(content)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.system(size: 11.5, design: .monospaced))
+        .padding(.trailing, 6)
+        .background(background)
+    }
+
+    private func number(_ value: Int?) -> some View {
+        Text(value.map(String.init) ?? "")
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.tertiary)
+            .frame(width: 34, alignment: .trailing)
+            .padding(.trailing, 4)
+    }
+
+    private var marker: String {
+        switch row.kind {
+        case .added: "+"
+        case .removed: "−"
+        case .context, .note: ""
+        }
+    }
+
+    private var markerColor: Color {
+        row.kind == .added ? .green : .red
+    }
+
+    private var background: Color {
+        switch row.kind {
+        case .added: Color.green.opacity(0.12)
+        case .removed: Color.red.opacity(0.12)
+        case .context, .note: .clear
+        }
+    }
+
+    private var content: AttributedString {
+        if row.kind == .note {
+            var text = AttributedString(row.text)
+            text.foregroundColor = .secondary
+            return text
+        }
+        let base: NSColor = row.kind == .context ? .secondaryLabelColor : .labelColor
+        let highlighted = syntax?.highlight(row.text, font: Self.font, color: base)
+            ?? NSAttributedString(string: row.text, attributes: [.font: Self.font, .foregroundColor: base])
+        return (try? AttributedString(highlighted, including: \.appKit)) ?? AttributedString(row.text)
     }
 }
