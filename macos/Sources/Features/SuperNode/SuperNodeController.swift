@@ -14,7 +14,22 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
 
     private static let frameName = "WispSuperNodeWindow"
 
-    private var canvas: SuperNodeCanvasView?
+    /// Each project has its own canvas. Open canvases stay in the window,
+    /// hidden, so their terminals keep running and notifications can find them.
+    @Published private(set) var projects: [SuperNodeProject] = []
+    @Published private(set) var currentProjectID: UUID?
+    private var canvases: [UUID: SuperNodeCanvasView] = [:]
+    private let container = SuperNodeContainerView()
+    private var loaded = false
+
+    /// The canvas of the current project.
+    var canvas: SuperNodeCanvasView? {
+        currentProjectID.flatMap { canvases[$0] }
+    }
+
+    var currentProject: SuperNodeProject? {
+        projects.first { $0.id == currentProjectID }
+    }
 
     /// The terminal window SuperNode was turned on from, shown again when it's
     /// turned off.
@@ -31,6 +46,7 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
             backing: .buffered,
             defer: true)
         window.title = "SuperNode"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.isRestorable = false
@@ -51,6 +67,12 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
         toggle.view = NonDraggableHostingView(rootView: SuperNodeToggle(isCanvas: true, window: window))
         window.addTitlebarAccessoryViewController(toggle)
         toggle.view.translatesAutoresizingMaskIntoConstraints = false
+
+        let projectMenu = NSTitlebarAccessoryViewController()
+        projectMenu.layoutAttribute = .left
+        projectMenu.view = NonDraggableHostingView(rootView: SuperNodeProjectMenu(controller: self))
+        window.addTitlebarAccessoryViewController(projectMenu)
+        projectMenu.view.translatesAutoresizingMaskIntoConstraints = false
 
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(surfaceDidClose(_:)), name: Ghostty.Notification.ghosttyCloseSurface, object: nil)
@@ -90,13 +112,19 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
             returnWindow = source
         }
 
-        if canvas == nil {
-            let canvas = SuperNodeCanvasView(ghostty: ghostty, document: SuperNodeStore.load())
-            window.contentView = canvas
+        if !loaded {
+            loaded = true
+            window.contentView = container
             window.backgroundColor = NSColor(ghostty.config.backgroundColor)
-            self.canvas = canvas
-            SuperNodeHookCenter.shared.onEvent = { [weak canvas] event in canvas?.handle(event) }
+            let index = SuperNodeStore.loadIndex()
+            projects = index.projects
+            SuperNodeHookCenter.shared.onEvent = { [weak self] event in self?.route(event) }
             SuperNodeHookCenter.shared.start()
+            switchTo(index.current.flatMap { id in index.projects.contains { $0.id == id } ? id : nil } ?? index.projects[0].id)
+            // Sessions whose node is in no project are left over; end them.
+            if SuperNodeTmux.executable != nil {
+                SuperNodeTmux.removeOrphans(keeping: SuperNodeStore.allNodeIDs(in: index))
+            }
         }
 
         isActive = true
@@ -105,6 +133,122 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
         if let canvas, canvas.window?.firstResponder === window {
             window.makeFirstResponder(canvas)
         }
+    }
+
+    // MARK: Projects
+
+    /// Shows a project's canvas, opening it the first time.
+    func switchTo(_ id: UUID) {
+        guard let ghostty, projects.contains(where: { $0.id == id }) else { return }
+        if let current = canvas, currentProjectID != id {
+            current.save()
+            current.setRefreshing(false)
+            current.isHidden = true
+        }
+        let canvas: SuperNodeCanvasView
+        if let open = canvases[id] {
+            canvas = open
+        } else {
+            canvas = SuperNodeCanvasView(ghostty: ghostty, projectID: id)
+            canvas.frame = container.bounds
+            canvas.autoresizingMask = [.width, .height]
+            container.addSubview(canvas)
+            canvases[id] = canvas
+        }
+        canvas.isHidden = false
+        currentProjectID = id
+        window?.title = "SuperNode – " + (currentProject?.name ?? "")
+        saveIndex()
+        if isActive { canvas.setRefreshing(true) }
+        window?.makeFirstResponder(canvas)
+    }
+
+    func newProject() {
+        promptName(title: "New Project", value: "") { [weak self] name in
+            self?.createProject(named: name)
+        }
+    }
+
+    func createProject(named name: String) {
+        let project = SuperNodeProject(name: name)
+        projects.append(project)
+        switchTo(project.id)
+    }
+
+    func renameProject() {
+        guard let project = currentProject else { return }
+        promptName(title: "Rename Project", value: project.name) { [weak self] name in
+            guard let self, let index = self.projects.firstIndex(where: { $0.id == project.id }) else { return }
+            self.projects[index].name = name
+            self.window?.title = "SuperNode – " + name
+            self.saveIndex()
+        }
+    }
+
+    /// Deletes the current project, closing its nodes and ending their sessions.
+    func deleteProject() {
+        guard let project = currentProject, projects.count > 1, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete the project \(project.name)?"
+        alert.informativeText = "Its canvas is deleted, and the terminals and agents on it are closed."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            let canvas = self.canvases[project.id] ?? self.canvas
+            canvas?.closeAllNodes()
+            canvas?.setRefreshing(false)
+            canvas?.removeFromSuperview()
+            self.canvases[project.id] = nil
+            self.projects.removeAll { $0.id == project.id }
+            SuperNodeStore.delete(project.id)
+            self.currentProjectID = nil
+            self.switchTo(self.projects[0].id)
+        }
+    }
+
+    private func saveIndex() {
+        SuperNodeStore.saveIndex(SuperNodeProjectIndex(projects: projects, current: currentProjectID))
+    }
+
+    private func promptName(title: String, value: String, completion: @escaping (String) -> Void) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = value
+        field.placeholderString = "Project name"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { response in
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard response == .alertFirstButtonReturn, !name.isEmpty else { return }
+            completion(name)
+        }
+    }
+
+    /// The open canvas a terminal belongs to.
+    private func canvas(containing surface: Ghostty.SurfaceView) -> SuperNodeCanvasView? {
+        canvases.values.first { $0.contains(surface) }
+    }
+
+    /// A hook event goes to the canvas with its node. A permission request
+    /// for a project that isn't open is left to Claude's own prompt.
+    private func route(_ event: SuperNodeHookEvent) {
+        if let canvas = canvases.values.first(where: { $0.node(event.node) != nil }) {
+            canvas.handle(event)
+        } else if event.name == "PermissionRequest" {
+            SuperNodeHooks.answer(event.id, with: "pass")
+        }
+    }
+
+    /// Shows the project a terminal is in, as when a notification about it is clicked.
+    func reveal(_ surface: Ghostty.SurfaceView) {
+        guard let owner = canvases.first(where: { $0.value.contains(surface) })?.key, owner != currentProjectID else { return }
+        switchTo(owner)
     }
 
     private func hide() {
@@ -132,6 +276,11 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
         return false
     }
 
+    // Edit > Undo and Redo work on the current canvas.
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        canvas?.undoManager
+    }
+
     // Clicking a notification shows the window without the switch.
     func windowDidBecomeKey(_ notification: Notification) {
         guard !isActive, canvas != nil else { return }
@@ -150,13 +299,13 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
     // become connected nodes, new tabs become nodes, and closing closes the node.
 
     @objc private func surfaceDidClose(_ notification: Notification) {
-        guard let surface = notification.object as? Ghostty.SurfaceView, canvas?.contains(surface) == true else { return }
+        guard let surface = notification.object as? Ghostty.SurfaceView, let canvas = canvas(containing: surface) else { return }
         let processAlive = (notification.userInfo?["process_alive"] as? Bool) ?? false
-        canvas?.close(surface: surface, confirm: processAlive)
+        canvas.close(surface: surface, confirm: processAlive)
     }
 
     @objc private func surfaceDidRequestSplit(_ notification: Notification) {
-        guard let surface = notification.object as? Ghostty.SurfaceView, canvas?.contains(surface) == true else { return }
+        guard let surface = notification.object as? Ghostty.SurfaceView, let canvas = canvas(containing: surface) else { return }
         guard let direction = notification.userInfo?["direction"] as? ghostty_action_split_direction_e else { return }
         let config = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey] as? Ghostty.SurfaceConfiguration
         let newDirection: SplitTree<Ghostty.SurfaceView>.NewDirection
@@ -166,28 +315,33 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
         case GHOSTTY_SPLIT_DIRECTION_DOWN: newDirection = .down
         default: newDirection = .right
         }
-        canvas?.split(surface, direction: newDirection, config: config)
+        canvas.split(surface, direction: newDirection, config: config)
     }
 
     @objc private func surfaceDidRequestTab(_ notification: Notification) {
-        guard let surface = notification.object as? Ghostty.SurfaceView, canvas?.contains(surface) == true else { return }
+        guard let surface = notification.object as? Ghostty.SurfaceView, let canvas = canvas(containing: surface) else { return }
         let config = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey] as? Ghostty.SurfaceConfiguration
-        canvas?.newTerminal(near: surface, config: config)
+        canvas.newTerminal(near: surface, config: config)
     }
 
     @objc private func surfaceDidRequestCloseTab(_ notification: Notification) {
-        guard let surface = notification.object as? Ghostty.SurfaceView, canvas?.contains(surface) == true else { return }
-        canvas?.close(surface: surface, confirm: true)
+        guard let surface = notification.object as? Ghostty.SurfaceView, let canvas = canvas(containing: surface) else { return }
+        canvas.close(surface: surface, confirm: true)
     }
 
     @objc private func appWillTerminate(_ notification: Notification) {
-        canvas?.save()
-        canvas?.saveScrollback(waiting: true)
+        for canvas in canvases.values {
+            canvas.save()
+            canvas.saveScrollback(waiting: true)
+        }
     }
 
-    /// A terminal on the canvas, for notifications to find when clicked.
+    /// A terminal on any open canvas, for notifications to find when clicked.
     func surface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
-        canvas?.terminalNodes.first { $0.surface.id == uuid }?.surface
+        for canvas in canvases.values {
+            if let terminal = canvas.terminalNodes.first(where: { $0.surface.id == uuid }) { return terminal.surface }
+        }
+        return nil
     }
 }
 
@@ -218,11 +372,29 @@ extension SuperNodeController: NSMenuItemValidation {
 /// The SuperNode window. Clicking anywhere in a node brings it to the front,
 /// including clicks the terminal itself handles.
 final class SuperNodeWindow: NSWindow {
-    // ⌘⇧B switches between the canvas and the board, even from a terminal.
+    // ⌘⇧B switches between the canvas and the board, ⌘K opens the command
+    // palette, and ⌘Z undoes canvas changes, even from a terminal. Text being
+    // edited keeps its own ⌘Z through the canvas's shared history.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if let canvas = SuperNodeController.shared.canvas, !(firstResponder is NSTextView) {
+            if flags == .command, key == "z", canvas.undoManager?.canUndo == true {
+                canvas.undoManager?.undo()
+                return true
+            }
+            if flags == [.command, .shift], key == "z", canvas.undoManager?.canRedo == true {
+                canvas.undoManager?.redo()
+                return true
+            }
+        }
+        if flags == .command, key == "k", let canvas = SuperNodeController.shared.canvas {
+            canvas.showPalette()
+            return true
+        }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
            event.charactersIgnoringModifiers?.lowercased() == "b",
-           let canvas = contentView as? SuperNodeCanvasView {
+           let canvas = SuperNodeController.shared.canvas {
             canvas.toggleBoard()
             return true
         }
@@ -230,9 +402,11 @@ final class SuperNodeWindow: NSWindow {
     }
 
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        // A terminal in another project, such as from a notification, shows that project first.
+        if let surface = responder as? Ghostty.SurfaceView { SuperNodeController.shared.reveal(surface) }
         let result = super.makeFirstResponder(responder)
         if result, let surface = responder as? Ghostty.SurfaceView,
-           let canvas = contentView as? SuperNodeCanvasView {
+           let canvas = SuperNodeController.shared.canvas {
             canvas.surfaceDidFocus(surface)
         }
         return result
@@ -240,13 +414,55 @@ final class SuperNodeWindow: NSWindow {
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .leftMouseDown || event.type == .rightMouseDown,
-           let canvas = contentView as? SuperNodeCanvasView,
+           let canvas = SuperNodeController.shared.canvas,
            let superview = canvas.superview,
            let hit = canvas.hitTest(superview.convert(event.locationInWindow, from: nil)),
            let node = canvas.node(containing: hit) {
             canvas.select(node: node)
         }
         super.sendEvent(event)
+    }
+}
+
+// MARK: - Projects
+
+/// Holds the canvases of open projects; only the current one is visible.
+final class SuperNodeContainerView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// The project menu at the left of the SuperNode titlebar.
+struct SuperNodeProjectMenu: View {
+    @ObservedObject var controller: SuperNodeController
+
+    var body: some View {
+        Menu {
+            ForEach(controller.projects) { project in
+                Button {
+                    controller.switchTo(project.id)
+                } label: {
+                    if project.id == controller.currentProjectID {
+                        Label(project.name, systemImage: "checkmark")
+                    } else {
+                        Text(project.name)
+                    }
+                }
+            }
+            Divider()
+            Button("New Project…") { controller.newProject() }
+            Button("Rename Project…") { controller.renameProject() }
+            Button("Delete Project…") { controller.deleteProject() }
+                .disabled(controller.projects.count <= 1)
+        } label: {
+            // One Text: a borderless menu shows only the first view of its label.
+            (Text("SuperNode  /  ").foregroundColor(.secondary) + Text(controller.currentProject?.name ?? ""))
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .padding(.leading, 8)
+        .frame(maxHeight: .infinity)
+        .help("Switch project")
     }
 }
 

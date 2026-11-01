@@ -382,6 +382,7 @@ final class SuperNodeResizeGrip: NSView {
         guard let node, let canvas = node.canvas else { return }
         startPoint = canvas.worldPoint(for: event)
         startSize = node.item.frame.size
+        canvas.beginResizing(node)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -393,9 +394,9 @@ final class SuperNodeResizeGrip: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard startPoint != nil else { return }
+        guard startPoint != nil, let node else { return }
         startPoint = nil
-        node?.canvas?.documentDidChange()
+        node.canvas?.endResizing(node)
     }
 }
 

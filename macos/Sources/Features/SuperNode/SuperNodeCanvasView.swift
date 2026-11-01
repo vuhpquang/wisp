@@ -73,9 +73,13 @@ final class SuperNodeCanvasView: NSView {
 
     static let zoomRange: ClosedRange<CGFloat> = 0.15...1.5
 
-    init(ghostty: Ghostty.App, document: SuperNodeDocument) {
+    /// The project this canvas belongs to.
+    let projectID: UUID
+
+    init(ghostty: Ghostty.App, projectID: UUID) {
         self.ghostty = ghostty
-        self.document = document
+        self.projectID = projectID
+        self.document = SuperNodeStore.load(projectID)
         super.init(frame: NSRect(x: 0, y: 0, width: 1000, height: 700))
         wantsLayer = true
         addSubview(world)
@@ -110,9 +114,6 @@ final class SuperNodeCanvasView: NSView {
 
         for item in document.nodes {
             addNodeView(for: item, restoring: true)
-        }
-        if SuperNodeTmux.executable != nil {
-            SuperNodeTmux.removeOrphans(keeping: Set(document.nodes.map(\.id)))
         }
         // Keep the saved scrollback recent in case the Mac restarts without quitting Wisp.
         scrollbackTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
@@ -576,6 +577,7 @@ final class SuperNodeCanvasView: NSView {
         baseConfig: Ghostty.SurfaceConfiguration? = nil,
         command: String? = nil
     ) -> SuperNodeNodeView? {
+        if !restoring { checkpoint("Add Node") }
         let view: SuperNodeNodeView
         switch item.kind {
         case .terminal, .agent:
@@ -673,6 +675,7 @@ final class SuperNodeCanvasView: NSView {
     func beginMoving(_ node: SuperNodeNodeView) {
         select(node: node)
         movingGroupMembers = node.item.kind == .group ? nodes(inside: node) : []
+        gestureStart = snapshot()
     }
 
     func move(_ node: SuperNodeNodeView, by delta: CGSize) {
@@ -685,6 +688,7 @@ final class SuperNodeCanvasView: NSView {
 
     func endMoving(_ node: SuperNodeNodeView) {
         movingGroupMembers = []
+        finishGesture("Move")
         // Group headers count the nodes inside them.
         for group in nodeViews where group.item.kind == .group { group.refreshHeader() }
         documentDidChange()
@@ -714,6 +718,7 @@ final class SuperNodeCanvasView: NSView {
             return
         }
 
+        checkpoint("Close Node")
         node.tearDown()
         SuperNodeContext.remove(node.item.id)
         removeSubagentCards(for: node.item.id)
@@ -725,9 +730,15 @@ final class SuperNodeCanvasView: NSView {
         documentDidChange()
     }
 
+    /// Closes every node without asking, as when its project is deleted.
+    func closeAllNodes() {
+        for node in nodeViews { closeNode(node, confirm: false) }
+    }
+
     func renameNode(_ node: SuperNodeNodeView) {
         prompt(title: "Rename Node", message: nil, value: node.displayTitle) { [weak node, weak self] name in
             guard let node else { return }
+            self?.checkpoint("Rename")
             node.item.title = name.isEmpty ? nil : name
             self?.documentDidChange()
         }
@@ -741,6 +752,7 @@ final class SuperNodeCanvasView: NSView {
         let colorMenu = NSMenu()
         for color in SuperNodeColor.allCases {
             let item = SuperNodeMenuItem(title: color.name) { [weak self] in
+                self?.checkpoint("Change Color")
                 node.item.color = color
                 self?.needsDisplay = true
                 self?.documentDidChange()
@@ -790,6 +802,7 @@ final class SuperNodeCanvasView: NSView {
         let inside = nodes(inside: group)
         guard var rect = inside.first?.item.frame else { return }
         for node in inside.dropFirst() { rect = rect.union(node.item.frame) }
+        checkpoint("Fit Group")
         group.item.frame = rect.insetBy(dx: -30, dy: -30).offsetBy(dx: 0, dy: -SuperNodeNodeView.headerHeight / 2)
         group.item.frame.size.height += SuperNodeNodeView.headerHeight
         needsDisplay = true
@@ -1020,6 +1033,7 @@ final class SuperNodeCanvasView: NSView {
         guard !document.edges.contains(where: {
             ($0.from == from.item.id && $0.to == to.item.id) || ($0.from == to.item.id && $0.to == from.item.id)
         }) else { return }
+        checkpoint("Connect")
         document.edges.append(SuperNodeEdge(from: from.item.id, to: to.item.id, label: label))
         if let diff = to as? SuperNodeDiffView { diff.reload() }
         needsDisplay = true
@@ -1027,6 +1041,7 @@ final class SuperNodeCanvasView: NSView {
     }
 
     private func removeEdge(_ id: UUID) {
+        checkpoint("Delete Connection")
         document.edges.removeAll { $0.id == id }
         if selectedEdge == id { selectedEdge = nil }
         needsDisplay = true
@@ -1037,6 +1052,7 @@ final class SuperNodeCanvasView: NSView {
         guard let edge = document.edges.first(where: { $0.id == id }) else { return }
         prompt(title: "Label Connection", message: "Describe how these nodes relate.", value: edge.label ?? "") { [weak self] label in
             guard let self, let index = self.document.edges.firstIndex(where: { $0.id == id }) else { return }
+            self.checkpoint("Label Connection")
             self.document.edges[index].label = label.isEmpty ? nil : label
             self.needsDisplay = true
             self.documentDidChange()
@@ -1070,6 +1086,7 @@ final class SuperNodeCanvasView: NSView {
         menu.addItem(SuperNodeMenuItem(title: "Reverse Direction") { [weak self] in
             guard let self, let index = self.document.edges.firstIndex(where: { $0.id == edge.id }) else { return }
             let edge = self.document.edges[index]
+            self.checkpoint("Reverse Connection")
             self.document.edges[index].from = edge.to
             self.document.edges[index].to = edge.from
             self.needsDisplay = true
@@ -1272,6 +1289,193 @@ final class SuperNodeCanvasView: NSView {
 
     func setColumns(_ columns: [SuperNodeColumn]) {
         document.columns = columns
+        documentDidChange()
+    }
+
+    // MARK: Command palette
+
+    private var paletteHost: NSView?
+
+    /// Opens ⌘K: every node to jump to, canvas commands, and projects.
+    func showPalette() {
+        guard paletteHost == nil else { return }
+        let model = SuperNodePaletteModel(items: paletteItems())
+        let view = ZStack(alignment: .top) {
+            Color.black.opacity(0.15)
+                .contentShape(Rectangle())
+                .onTapGesture { [weak self] in self?.closePalette() }
+            SuperNodePaletteView(
+                model: model,
+                onRun: { [weak self] item in
+                    self?.closePalette()
+                    // Let the palette go before a command opens a panel or menu.
+                    DispatchQueue.main.async { item.action() }
+                },
+                onClose: { [weak self] in self?.closePalette() })
+                .padding(.top, 70)
+        }
+        let host = NSHostingView(rootView: view)
+        host.frame = bounds
+        host.autoresizingMask = [.width, .height]
+        addSubview(host)
+        paletteHost = host
+    }
+
+    private func closePalette() {
+        paletteHost?.removeFromSuperview()
+        paletteHost = nil
+        if window?.firstResponder == nil || window?.firstResponder === window { window?.makeFirstResponder(self) }
+    }
+
+    private func paletteItems() -> [SuperNodePaletteItem] {
+        var items: [SuperNodePaletteItem] = []
+
+        for node in nodeViews {
+            let detail: String
+            switch node {
+            case let terminal as SuperNodeTerminalView:
+                detail = terminal.directory.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? ""
+            case let editor as SuperNodeEditorView:
+                detail = editor.path.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? ""
+            case let diff as SuperNodeDiffView:
+                detail = diff.directory.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? ""
+            default:
+                detail = node.item.url ?? ""
+            }
+            items.append(SuperNodePaletteItem(
+                id: "node:" + node.item.id.uuidString,
+                title: node.displayTitle,
+                subtitle: [node.defaultTitle == node.displayTitle ? nil : node.defaultTitle, detail]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                symbol: node.item.kind.symbol,
+                action: { [weak self, weak node] in
+                    guard let self, let node else { return }
+                    self.showBoard(false)
+                    self.reveal(node)
+                    if let terminal = node as? SuperNodeTerminalView {
+                        self.window?.makeFirstResponder(terminal.surface)
+                    } else if let editor = node as? SuperNodeEditorView {
+                        editor.focus()
+                    }
+                }))
+        }
+
+        func command(_ title: String, _ symbol: String, _ action: @escaping () -> Void) {
+            items.append(SuperNodePaletteItem(id: "command:" + title, title: title, subtitle: "Command", symbol: symbol, action: action))
+        }
+        command("New Terminal", "terminal") { [weak self] in self?.addNode(.terminal) }
+        for agent in SuperNodeAgent.allCases {
+            command("New \(agent.name)", "sparkles") { [weak self] in self?.addNode(.agent, agent: agent) }
+        }
+        command("New Note", "note.text") { [weak self] in self?.addNode(.note) }
+        command("New Diff…", "plusminus") { [weak self] in self?.addDiff(at: nil) }
+        command("Open File…", "doc.text") { [weak self] in self?.openFile(at: nil) }
+        command("New Web Page", "globe") { [weak self] in self?.addNode(.web) }
+        command("New Group", "square.dashed") { [weak self] in self?.addNode(.group) }
+        command(model.isBoard ? "Show Canvas" : "Show Board", "rectangle.split.3x1") { [weak self] in self?.toggleBoard() }
+        command("Zoom to Fit", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.zoomToFit() }
+        command(model.showsMinimap ? "Hide Minimap" : "Show Minimap", "map") { [weak self] in self?.toggleMinimap() }
+        if history.canUndo {
+            command("Undo " + history.undoActionName, "arrow.uturn.backward") { [weak self] in self?.history.undo() }
+        }
+        if history.canRedo {
+            command("Redo " + history.redoActionName, "arrow.uturn.forward") { [weak self] in self?.history.redo() }
+        }
+
+        let controller = SuperNodeController.shared
+        for project in controller.projects where project.id != projectID {
+            items.append(SuperNodePaletteItem(
+                id: "project:" + project.id.uuidString,
+                title: project.name,
+                subtitle: "Switch project",
+                symbol: "square.stack.3d.up",
+                action: { controller.switchTo(project.id) }))
+        }
+        command("New Project…", "plus.square.on.square") { controller.newProject() }
+        command("Rename Project…", "pencil") { controller.renameProject() }
+        return items
+    }
+
+    // MARK: Undo
+
+    /// Each canvas has its own history. Notes and editors on it share it, so
+    /// ⌘Z undoes typing and canvas changes in the order they happened.
+    private let history = UndoManager()
+    override var undoManager: UndoManager? { history }
+
+    private var applyingUndo = false
+    /// The canvas before a drag that moves or resizes a node began.
+    private var gestureStart: Snapshot?
+
+    /// What undo restores: the nodes' places, names and colors, which nodes
+    /// exist, and the connections. What runs in a terminal can't be undone.
+    struct Snapshot {
+        let nodes: [SuperNodeItem]
+        let edges: [SuperNodeEdge]
+    }
+
+    private func snapshot() -> Snapshot {
+        Snapshot(nodes: nodeViews.map(\.item), edges: document.edges)
+    }
+
+    /// Records the canvas before a change, so the change can be undone.
+    func checkpoint(_ name: String) {
+        guard !applyingUndo else { return }
+        register(snapshot(), name: name)
+    }
+
+    private func register(_ snapshot: Snapshot, name: String) {
+        history.registerUndo(withTarget: self) { canvas in canvas.restore(snapshot, name: name) }
+        history.setActionName(name)
+    }
+
+    private func restore(_ snapshot: Snapshot, name: String) {
+        register(self.snapshot(), name: name)
+        apply(snapshot)
+    }
+
+    func beginResizing(_ node: SuperNodeNodeView) {
+        gestureStart = snapshot()
+    }
+
+    func endResizing(_ node: SuperNodeNodeView) {
+        finishGesture("Resize")
+        documentDidChange()
+    }
+
+    /// Records a drag only if it moved something.
+    private func finishGesture(_ name: String) {
+        defer { gestureStart = nil }
+        guard let start = gestureStart else { return }
+        let moved = start.nodes.contains { item in node(item.id).map { $0.item.frame != item.frame } ?? false }
+        if moved { register(start, name: name) }
+    }
+
+    private func apply(_ snapshot: Snapshot) {
+        applyingUndo = true
+        defer { applyingUndo = false }
+
+        let ids = Set(snapshot.nodes.map(\.id))
+        for node in nodeViews where !ids.contains(node.item.id) {
+            closeNode(node, confirm: false)
+        }
+        for item in snapshot.nodes {
+            if let node = node(item.id) {
+                // Only what undo tracks; the rest keeps what happened since.
+                var current = node.item
+                current.frame = item.frame
+                current.title = item.title
+                current.color = item.color
+                node.item = current
+                if let terminal = node as? SuperNodeTerminalView { layoutSubagentCards(for: terminal) }
+            } else {
+                // A closed node comes back; an agent resumes its conversation.
+                addNodeView(for: item, restoring: true)
+            }
+        }
+        document.edges = snapshot.edges.filter { node($0.from) != nil && node($0.to) != nil }
+        for group in nodeViews where group.item.kind == .group { group.refreshHeader() }
+        needsDisplay = true
         documentDidChange()
     }
 
@@ -1625,7 +1829,7 @@ final class SuperNodeCanvasView: NSView {
         saveWork?.cancel()
         saveWork = nil
         document.nodes = nodeViews.map(\.item)
-        SuperNodeStore.save(document)
+        SuperNodeStore.save(document, project: projectID)
         updateLinks()
     }
 

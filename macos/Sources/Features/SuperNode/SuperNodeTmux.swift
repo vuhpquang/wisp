@@ -140,11 +140,11 @@ enum SuperNodeTmux {
         return parts.map(SuperNodeHooks.shellQuote).joined(separator: " ")
     }
 
+    /// Ends a node's session. It waits, so a node brought back by undo right
+    /// after starts a new session instead of joining the one being ended.
     static func kill(_ id: UUID) {
-        DispatchQueue.global(qos: .utility).async {
-            run(["kill-session", "-t", "=" + sessionName(id)])
-            try? FileManager.default.removeItem(at: scrollbackURL(id))
-        }
+        run(["kill-session", "-t", "=" + sessionName(id)])
+        try? FileManager.default.removeItem(at: scrollbackURL(id))
     }
 
     /// What each session's pane is doing, by node.

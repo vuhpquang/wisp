@@ -53,6 +53,12 @@ take the version from the first heading.
 - Web nodes show a page beside your terminals, with an address bar, back and forward. When a
   terminal prints a local address, such as a dev server's http://localhost:3000, a globe button
   on it opens the page in a connected web node.
+- Projects: each one is a canvas of its own. Switch, add, rename or delete them from the menu
+  at the top left. The canvas you had becomes the Default project, and terminals keep running
+  in projects you aren't looking at.
+- ⌘K opens a command palette: type to jump to any node, run a canvas command, or switch project.
+- ⌘Z and ⇧⌘Z undo and redo canvas changes: adding, closing, moving, resizing, connecting,
+  renaming and recoloring nodes. A closed agent comes back resuming its conversation.
 - Pan by scrolling or dragging the canvas, zoom by pinching or ⌘-scrolling. The minimap in the
   corner shows the whole canvas; click or drag in it to move there. Moving a group moves the
   nodes inside it. The canvas is saved between launches.

@@ -200,31 +200,87 @@ enum SuperNodeAgent: String, Codable, CaseIterable {
     }
 }
 
-/// Reads and writes the canvas to Application Support.
+/// A canvas of its own, such as one per repository or piece of work.
+struct SuperNodeProject: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+}
+
+/// The projects and which one was open last.
+struct SuperNodeProjectIndex: Codable {
+    var projects: [SuperNodeProject] = []
+    var current: UUID?
+}
+
+/// Reads and writes projects and their canvases to Application Support.
 enum SuperNodeStore {
-    static var url: URL {
-        // Debug builds keep their own canvas so they don't touch the installed app's.
-        let isDebug = Bundle.main.bundleIdentifier?.hasSuffix(".debug") == true
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Wisp")
-            .appendingPathComponent(isDebug ? "supernode-debug.json" : "supernode.json")
+    /// Debug builds keep their own canvases so they don't touch the installed app's.
+    private static var baseName: String {
+        Bundle.main.bundleIdentifier?.hasSuffix(".debug") == true ? "supernode-debug" : "supernode"
     }
 
-    static func load() -> SuperNodeDocument {
-        guard let data = try? Data(contentsOf: url),
+    private static var folder: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Wisp")
+    }
+
+    /// The single canvas saved before there were projects.
+    private static var legacyURL: URL { folder.appendingPathComponent(baseName + ".json") }
+    private static var indexURL: URL { folder.appendingPathComponent(baseName + "-projects.json") }
+    private static var projectsFolder: URL { folder.appendingPathComponent(baseName + "-projects") }
+
+    static func url(for project: UUID) -> URL {
+        projectsFolder.appendingPathComponent(project.uuidString + ".json")
+    }
+
+    /// The projects, creating the first one from the canvas saved before
+    /// there were projects.
+    static func loadIndex() -> SuperNodeProjectIndex {
+        if let data = try? Data(contentsOf: indexURL),
+           let index = try? JSONDecoder().decode(SuperNodeProjectIndex.self, from: data),
+           !index.projects.isEmpty {
+            return index
+        }
+        let first = SuperNodeProject(name: "Default")
+        try? FileManager.default.createDirectory(at: projectsFolder, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: legacyURL.path) {
+            try? FileManager.default.copyItem(at: legacyURL, to: url(for: first.id))
+        }
+        let index = SuperNodeProjectIndex(projects: [first], current: first.id)
+        saveIndex(index)
+        return index
+    }
+
+    static func saveIndex(_ index: SuperNodeProjectIndex) {
+        write(index, to: indexURL)
+    }
+
+    static func load(_ project: UUID) -> SuperNodeDocument {
+        guard let data = try? Data(contentsOf: url(for: project)),
               let document = try? JSONDecoder().decode(SuperNodeDocument.self, from: data) else {
             return SuperNodeDocument()
         }
         return document
     }
 
-    static func save(_ document: SuperNodeDocument) {
+    static func save(_ document: SuperNodeDocument, project: UUID) {
+        write(document, to: url(for: project))
+    }
+
+    static func delete(_ project: UUID) {
+        try? FileManager.default.removeItem(at: url(for: project))
+    }
+
+    /// The nodes of every saved project, so cleanup never ends a session that
+    /// belongs to a project that isn't open.
+    static func allNodeIDs(in index: SuperNodeProjectIndex) -> Set<UUID> {
+        Set(index.projects.flatMap { load($0.id).nodes.map(\.id) })
+    }
+
+    private static func write<Value: Encodable>(_ value: Value, to url: URL) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(document) else { return }
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true)
+        guard let data = try? encoder.encode(value) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
     }
 }
