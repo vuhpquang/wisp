@@ -1069,11 +1069,6 @@ final class SuperNodeCanvasView: NSView {
         }
         var state = node.agentState ?? SuperNodeAgentState()
         let notify = state.apply(event)
-        // Plans and questions can't be answered with Allow, so let the hook
-        // return right away rather than hold the request.
-        if event.name == "PermissionRequest", let permission = state.permission, !permission.answerable {
-            SuperNodeHooks.answer(permission.id, with: "pass")
-        }
         node.agentState = state
         if let session = state.sessionID, session != node.item.sessionID {
             node.item.sessionID = session
@@ -1095,9 +1090,14 @@ final class SuperNodeCanvasView: NSView {
         case .needsYou:
             let body: String
             if let permission = state?.permission {
-                body = permission.answerable
-                    ? "Wants to use \(permission.tool)" + (permission.summary.map { ": \($0)" } ?? "")
-                    : "Is asking you something"
+                switch permission.kind {
+                case .tool:
+                    body = "Wants to use \(permission.tool)" + (permission.summary.map { ": \($0)" } ?? "")
+                case .plan:
+                    body = "Has a plan for you to review"
+                case let .questions(questions):
+                    body = questions.first.map { "Asks: \($0.text)" } ?? "Is asking you something"
+                }
             } else {
                 body = state?.message ?? "Waiting for your input"
             }

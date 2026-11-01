@@ -25,9 +25,14 @@ enum SuperNodeHooks {
     static let nodeVariable = "WISP_SUPERNODE_NODE"
     static let directoryVariable = "WISP_SUPERNODE_HOOK_DIR"
 
-    /// How long a permission request waits for Allow or Deny from Wisp. Claude
-    /// allows a hook 60 seconds; the terminal prompt works throughout.
+    /// How long a permission request waits for Allow or Deny from Wisp. The
+    /// terminal prompt works throughout, except for a subagent's request,
+    /// whose prompt only shows once the hook returns.
     static let permissionWait = 40
+
+    /// Plans and questions take minutes to read, so they wait longer. Claude
+    /// shows its own prompt at the same time, so the wait blocks nothing.
+    static let interactiveWait = 540
 
     /// Hook events and how long Claude should wait for each.
     private static let events: [(name: String, matcher: Bool, timeout: Int)] = [
@@ -35,7 +40,8 @@ enum SuperNodeHooks {
         ("UserPromptSubmit", false, 10),
         ("PreToolUse", true, 10),
         ("PostToolUse", true, 10),
-        ("PermissionRequest", true, 60),
+        // Longer than the wait for plans and questions.
+        ("PermissionRequest", true, interactiveWait + 60),
         ("Notification", false, 10),
         ("Stop", false, 10),
         ("SubagentStop", false, 10),
@@ -75,8 +81,15 @@ enum SuperNodeHooks {
         "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Writes Allow, Deny or Pass (let the terminal prompt answer) for a held
-    /// permission request.
+    /// The decision a permission hook prints, as one line of JSON.
+    static func decision(_ decision: [String: Any]) -> String? {
+        let object = ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision]]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Writes Allow, Deny, Pass (let the terminal prompt answer) or a decision
+    /// from `decision(_:)` for a held permission request.
     static func answer(_ id: String, with answer: String) {
         let manager = FileManager.default
         try? manager.createDirectory(at: answersDirectory, withIntermediateDirectories: true)
@@ -102,12 +115,21 @@ enum SuperNodeHooks {
     mkdir -p "$dir/events" "$dir/answers" 2>/dev/null
     id="${node}__${event}__$(date +%s)-$$"
     tmp="$dir/events/.$id.tmp"
-    cat > "$tmp" && mv "$tmp" "$dir/events/$id.json"
+    cat > "$tmp" || exit 0
+
+    # Plans and questions in the main conversation wait longer; a subagent's
+    # prompt waits for this hook, so its requests stay short.
+    limit=$((\(permissionWait) * 2))
+    if [ "$event" = "PermissionRequest" ] && ! grep -q '"agent_id"' "$tmp"; then
+      case "$(grep -o '"tool_name"[[:space:]]*:[[:space:]]*"[A-Za-z]*"' "$tmp" | head -n 1)" in
+        *'"ExitPlanMode"'|*'"AskUserQuestion"') limit=$((\(interactiveWait) * 2)) ;;
+      esac
+    fi
+    mv "$tmp" "$dir/events/$id.json"
 
     [ "$event" = "PermissionRequest" ] || exit 0
     answer="$dir/answers/$id"
     i=0
-    limit=$((\(permissionWait) * 2))
     while [ "$i" -lt "$limit" ]; do
       if [ -f "$answer" ]; then
         reply=$(cat "$answer")
@@ -115,6 +137,7 @@ enum SuperNodeHooks {
         case "$reply" in
           allow) printf '%s' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}' ;;
           deny) printf '%s' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied in Wisp SuperNode."}}}' ;;
+          '{"hookSpecificOutput":'*) printf '%s' "$reply" ;;
         esac
         exit 0
       fi
@@ -164,11 +187,35 @@ struct SuperNodeAgentState: Equatable {
 
     /// A permission request waiting for an answer.
     struct Permission: Equatable {
+        enum Kind: Equatable {
+            /// A tool to allow or deny.
+            case tool
+            /// A plan to approve or send back, in Markdown.
+            case plan(String)
+            case questions([Question])
+        }
+
         let id: String
         let tool: String
         let summary: String?
-        /// Plans and questions need the terminal: Claude ignores a plain Allow for them.
-        let answerable: Bool
+        let kind: Kind
+        /// The tool's input as JSON, which a question's answer is added to.
+        let input: Data?
+    }
+
+    /// One question from AskUserQuestion.
+    struct Question: Equatable, Identifiable {
+        struct Option: Equatable, Identifiable {
+            let label: String
+            let description: String?
+            var id: String { label }
+        }
+
+        let text: String
+        let header: String?
+        let multiSelect: Bool
+        let options: [Option]
+        var id: String { text }
     }
 
     var phase: Phase = .idle
@@ -207,8 +254,12 @@ struct SuperNodeAgentState: Equatable {
             if permission == nil { phase = .working }
         case "PermissionRequest":
             let tool = event.toolName ?? "a tool"
-            let interactive = tool == "AskUserQuestion" || tool == "ExitPlanMode"
-            permission = Permission(id: event.id, tool: tool, summary: event.toolSummary, answerable: !interactive)
+            permission = Permission(
+                id: event.id,
+                tool: tool,
+                summary: event.toolSummary,
+                kind: Self.kind(of: tool, input: event.toolInput),
+                input: event.toolInput.flatMap { try? JSONSerialization.data(withJSONObject: $0) })
             phase = .needsYou
         case "Notification":
             message = event.message
@@ -237,6 +288,69 @@ struct SuperNodeAgentState: Equatable {
 
         guard phase != before else { return nil }
         return phase == .needsYou || phase == .done ? phase : nil
+    }
+
+    private static func kind(of tool: String, input: [String: Any]?) -> Permission.Kind {
+        switch tool {
+        case "ExitPlanMode":
+            return .plan(input?["plan"] as? String ?? "")
+        case "AskUserQuestion":
+            let questions = (input?["questions"] as? [[String: Any]] ?? []).compactMap { question -> Question? in
+                guard let text = question["question"] as? String else { return nil }
+                let options = (question["options"] as? [[String: Any]] ?? []).compactMap { option -> Question.Option? in
+                    guard let label = option["label"] as? String else { return nil }
+                    return Question.Option(label: label, description: option["description"] as? String)
+                }
+                return Question(
+                    text: text,
+                    header: question["header"] as? String,
+                    multiSelect: question["multiSelect"] as? Bool ?? false,
+                    options: options)
+            }
+            return questions.isEmpty ? .tool : .questions(questions)
+        default:
+            return .tool
+        }
+    }
+}
+
+// MARK: - Answers
+
+/// How the user answered a permission request, turned into the decision the
+/// hook prints. Claude ignores a bare allow for plans and questions; they need
+/// `updatedInput`.
+enum SuperNodePermissionAnswer {
+    case allow
+    case deny
+    /// Let the terminal prompt answer.
+    case pass
+    /// Approve the plan. `mode` switches the permission mode, or nil to go back
+    /// to the mode before planning.
+    case approvePlan(mode: String?)
+    /// Send the plan back with feedback.
+    case revisePlan(String)
+    /// Answers by question text: chosen labels, or typed text.
+    case answers([String: String])
+
+    func reply(for permission: SuperNodeAgentState.Permission) -> String? {
+        switch self {
+        case .allow: return "allow"
+        case .deny: return "deny"
+        case .pass: return "pass"
+        case let .approvePlan(mode):
+            var decision: [String: Any] = ["behavior": "allow", "updatedInput": [String: Any]()]
+            if let mode {
+                decision["updatedPermissions"] = [["type": "setMode", "mode": mode, "destination": "session"]]
+            }
+            return SuperNodeHooks.decision(decision)
+        case let .revisePlan(feedback):
+            let message = feedback.isEmpty ? "The user wants to keep planning." : feedback
+            return SuperNodeHooks.decision(["behavior": "deny", "message": message])
+        case let .answers(answers):
+            var input = permission.input.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
+            input["answers"] = answers
+            return SuperNodeHooks.decision(["behavior": "allow", "updatedInput": input])
+        }
     }
 }
 

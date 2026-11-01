@@ -18,7 +18,10 @@ take the version from the first heading.
   the other, or between a note and a terminal to send the note.
 - Claude Code agent nodes report through hooks, without touching your Claude settings: RUNNING
   (with the tool in use and how many subagents run), NEEDS YOU, DONE and IDLE. When Claude asks
-  for permission, Allow or Deny it from the bar over the node, or in the terminal as usual. A
+  for permission, Allow or Deny it from the bar over the node, or in the terminal as usual.
+  Plans and questions are answered there too: read Claude's plan and approve it (keeping the
+  mode, auto-accepting edits or asking before each), or send it back with what to change; pick
+  answers to its questions, including several at once or your own text. A
   notification tells you when an agent needs you or finishes, unless you're looking at it.
   Agents reopen their own conversation after a relaunch.
 - ⌘⇧B (or the board button) turns the canvas into a board: terminals, agents and notes are cards

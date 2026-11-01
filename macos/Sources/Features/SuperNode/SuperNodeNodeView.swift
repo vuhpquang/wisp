@@ -406,7 +406,9 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
     var paneCommand: String?
     private var cancellables: Set<AnyCancellable> = []
     private var headerRefreshPending = false
-    private var approvalBar: NSHostingView<SuperNodeApprovalBar>?
+    private var permissionPanel: NSHostingView<SuperNodePermissionPanel>?
+    /// Whether a plan or question panel is folded down to its title.
+    private var permissionCollapsed = false
 
     /// What Claude is doing, from its hooks. Nil until the first hook event;
     /// until then the status is guessed from the terminal title.
@@ -517,39 +519,63 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
 
     private func updateApprovalBar() {
         guard let permission = agentState?.permission else {
-            approvalBar?.removeFromSuperview()
-            approvalBar = nil
+            permissionPanel?.removeFromSuperview()
+            permissionPanel = nil
+            permissionCollapsed = false
             return
         }
-        let bar = SuperNodeApprovalBar(permission: permission) { [weak self] allow in
-            self?.answer(allow: allow)
-        }
-        if let approvalBar {
-            approvalBar.rootView = bar
+        let panel = SuperNodePermissionPanel(
+            permission: permission,
+            collapsed: permissionCollapsed,
+            onToggleCollapsed: { [weak self] in
+                guard let self else { return }
+                self.permissionCollapsed.toggle()
+                self.updateApprovalBar()
+                self.needsLayout = true
+            },
+            onAnswer: { [weak self] answer in self?.answer(answer) })
+        if let permissionPanel, permissionPanel.rootView.permission == permission {
+            permissionPanel.rootView = panel
         } else {
-            let host = NSHostingView(rootView: bar)
+            // A new request gets a fresh panel, without the last one's choices.
+            permissionPanel?.removeFromSuperview()
+            let host = NSHostingView(rootView: panel)
             addSubview(host, positioned: .above, relativeTo: body)
-            approvalBar = host
-            needsLayout = true
+            permissionPanel = host
         }
+        needsLayout = true
     }
 
     /// Answers the held permission request; Claude's own prompt closes too.
-    func answer(allow: Bool) {
-        guard var state = agentState, let permission = state.permission else { return }
-        SuperNodeHooks.answer(permission.id, with: allow ? "allow" : "deny")
+    func answer(_ answer: SuperNodePermissionAnswer) {
+        guard var state = agentState, let permission = state.permission,
+              let reply = answer.reply(for: permission) else { return }
+        SuperNodeHooks.answer(permission.id, with: reply)
         state.permission = nil
-        state.phase = .working
+        // Passing leaves Claude's prompt waiting in the terminal.
+        if case .pass = answer {
+            window?.makeFirstResponder(surface)
+        } else {
+            state.phase = .working
+        }
         agentState = state
         canvas?.agentStateDidChange(self)
     }
 
     override func layout() {
         super.layout()
-        if let approvalBar {
-            let height = approvalBar.fittingSize.height
-            approvalBar.frame = NSRect(x: 8, y: Self.headerHeight + 8, width: bounds.width - 16, height: height)
+        guard let permissionPanel else { return }
+        let available = bounds.height - Self.headerHeight - 16
+        let height: CGFloat
+        if case .tool = permissionPanel.rootView.permission.kind {
+            height = permissionPanel.fittingSize.height
+        } else if permissionCollapsed {
+            height = permissionPanel.fittingSize.height
+        } else {
+            // Plans and questions take most of the node; the terminal shows below.
+            height = max(min(available, 160), available * 0.88)
         }
+        permissionPanel.frame = NSRect(x: 8, y: Self.headerHeight + 8, width: bounds.width - 16, height: min(height, available))
     }
 
     // MARK: Lending the terminal to the board
@@ -683,44 +709,5 @@ final class SuperNodeGroupView: SuperNodeNodeView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let hit = super.hitTest(point) else { return nil }
         return hit === self ? nil : hit
-    }
-}
-
-// MARK: - Approval bar
-
-/// Shown over an agent's terminal while Claude waits for permission.
-struct SuperNodeApprovalBar: View {
-    let permission: SuperNodeAgentState.Permission
-    let onAnswer: (Bool) -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "hand.raised.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(permission.answerable
-                     ? "Claude wants to use \(permission.tool)"
-                     : "Claude is asking you something. Answer in the terminal.")
-                    .font(.system(size: 12, weight: .semibold))
-                if let summary = permission.summary {
-                    Text(summary)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            Spacer(minLength: 8)
-            if permission.answerable {
-                Button("Deny") { onAnswer(false) }
-                Button("Allow") { onAnswer(true) }
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .controlSize(.small)
-        .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange.opacity(0.6)))
-        .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
     }
 }
