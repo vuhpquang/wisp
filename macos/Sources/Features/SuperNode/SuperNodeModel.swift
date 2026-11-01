@@ -9,9 +9,46 @@ struct SuperNodeDocument: Codable {
     var origin: CGPoint = .zero
     var zoom: CGFloat = 1
 
+    /// The board's columns. Optional so canvases saved before the board load.
+    var boardColumns: [SuperNodeColumn]?
+
+    var columns: [SuperNodeColumn] {
+        get { boardColumns ?? SuperNodeColumn.defaults }
+        set { boardColumns = newValue }
+    }
+
     func item(_ id: UUID) -> SuperNodeItem? {
         nodes.first { $0.id == id }
     }
+}
+
+/// A column on the board.
+struct SuperNodeColumn: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var title: String
+
+    static let defaults = ["To Do", "In Progress", "Review", "Done"].map { SuperNodeColumn(title: $0) }
+}
+
+enum SuperNodePriority: String, Codable, CaseIterable {
+    case low, medium, high, urgent
+
+    var name: String { rawValue.capitalized }
+
+    var color: NSColor {
+        switch self {
+        case .low: .systemGray
+        case .medium: .systemBlue
+        case .high: .systemOrange
+        case .urgent: .systemRed
+        }
+    }
+}
+
+struct SuperNodeComment: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var text: String
+    var date = Date()
 }
 
 /// One node on the canvas.
@@ -70,6 +107,22 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
 
     /// The file an editor node shows.
     var file: String?
+
+    /// The Claude Code session of an agent node, to resume after a relaunch.
+    var sessionID: String?
+
+    // Board card details.
+    var column: UUID?
+    var boardOrder: Double?
+    var priority: SuperNodePriority?
+    var due: Date?
+    var details: String?
+    var comments: [SuperNodeComment]?
+
+    /// Nodes that show up as cards on the board.
+    var isCard: Bool {
+        kind == .terminal || kind == .agent || kind == .note
+    }
 }
 
 /// A connection between two nodes, showing how they relate.
@@ -113,18 +166,21 @@ enum SuperNodeAgent: String, Codable, CaseIterable {
         }
     }
 
-    /// Typed into a new agent node's shell.
-    var command: String {
-        rawValue
-    }
-
-    /// Typed into the shell when the node comes back after a relaunch, so the
-    /// agent picks up its last conversation in that folder.
-    var resumeCommand: String {
+    /// Typed into the shell to start the agent. Claude reports its status
+    /// through SuperNode's hooks; on a relaunch the agent picks up its last
+    /// conversation, by session when known.
+    func command(resuming: Bool, sessionID: String?) -> String {
         switch self {
-        case .claude: "claude --continue"
-        case .codex: "codex resume --last"
-        case .gemini: "gemini"
+        case .claude:
+            var command = "claude --settings \(SuperNodeHooks.shellQuote(SuperNodeHooks.settingsURL.path))"
+            if resuming {
+                command += sessionID.map { " --resume \(SuperNodeHooks.shellQuote($0))" } ?? " --continue"
+            }
+            return command
+        case .codex:
+            return resuming ? "codex resume --last" : "codex"
+        case .gemini:
+            return "gemini"
         }
     }
 }

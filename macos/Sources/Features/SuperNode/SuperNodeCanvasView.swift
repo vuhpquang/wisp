@@ -28,6 +28,7 @@ final class SuperNodeSurfaceView: Ghostty.SurfaceView {
 final class SuperNodeCanvasModel: ObservableObject {
     @Published var zoom: CGFloat = 1
     @Published var isEmpty = true
+    @Published var isBoard = false
 }
 
 /// Holds the node views. Its bounds are scaled and offset to pan and zoom.
@@ -51,6 +52,8 @@ final class SuperNodeCanvasView: NSView {
     private let world = SuperNodeWorldView()
     private(set) var nodeViews: [SuperNodeNodeView] = []
     private var dock: NSView!
+    let board = SuperNodeBoardModel()
+    private var boardHost: NSView?
     private var emptyHint: NSView!
 
     private var selectedEdge: UUID?
@@ -512,10 +515,13 @@ final class SuperNodeCanvasView: NSView {
             guard let app = ghostty.app else { return nil }
             var config = baseConfig ?? Ghostty.SurfaceConfiguration()
             if let directory = item.directory { config.workingDirectory = directory }
+            // Lets the hook script tell Wisp which node an agent runs in.
+            config.environmentVariables[SuperNodeHooks.nodeVariable] = item.id.uuidString
+            config.environmentVariables[SuperNodeHooks.directoryVariable] = SuperNodeHooks.directory.path
             if item.kind == .agent, let agent = item.agent {
                 // Typed into the shell rather than run as the command, so the
                 // shell stays when the agent exits.
-                config.initialInput = (restoring ? agent.resumeCommand : agent.command) + "\n"
+                config.initialInput = agent.command(resuming: restoring, sessionID: item.sessionID) + "\n"
             }
             let surface = SuperNodeSurfaceView(app, baseConfig: config)
             view = SuperNodeTerminalView(item: item, surface: surface, ghostty: ghostty)
@@ -1005,7 +1011,132 @@ final class SuperNodeCanvasView: NSView {
 
     private func updateEmptyState() {
         model.isEmpty = nodeViews.isEmpty
-        emptyHint?.isHidden = !nodeViews.isEmpty
+        emptyHint?.isHidden = !nodeViews.isEmpty || model.isBoard
+    }
+
+    // MARK: Agent hooks
+
+    /// Applies a hook event from Claude Code to its node.
+    func handle(_ event: SuperNodeHookEvent) {
+        guard let node = node(event.node) as? SuperNodeTerminalView else {
+            // The node is gone; let Claude's own prompt answer.
+            if event.name == "PermissionRequest" { SuperNodeHooks.answer(event.id, with: "pass") }
+            return
+        }
+        var state = node.agentState ?? SuperNodeAgentState()
+        let notify = state.apply(event)
+        // Plans and questions can't be answered with Allow, so let the hook
+        // return right away rather than hold the request.
+        if event.name == "PermissionRequest", let permission = state.permission, !permission.answerable {
+            SuperNodeHooks.answer(permission.id, with: "pass")
+        }
+        node.agentState = state
+        if let session = state.sessionID, session != node.item.sessionID {
+            node.item.sessionID = session
+            documentDidChange()
+        }
+        if let notify { self.notify(node, notify) }
+        agentStateDidChange(node)
+    }
+
+    func agentStateDidChange(_ node: SuperNodeTerminalView) {
+        if model.isBoard { board.refresh() }
+    }
+
+    /// Posts a notification when an agent needs you or finishes, unless you're
+    /// already looking at it.
+    private func notify(_ node: SuperNodeTerminalView, _ phase: SuperNodeAgentState.Phase) {
+        let state = node.agentState
+        switch phase {
+        case .needsYou:
+            let body: String
+            if let permission = state?.permission {
+                body = permission.answerable
+                    ? "Wants to use \(permission.tool)" + (permission.summary.map { ": \($0)" } ?? "")
+                    : "Is asking you something"
+            } else {
+                body = state?.message ?? "Waiting for your input"
+            }
+            node.surface.showUserNotification(title: "\(node.displayTitle) needs you", body: body)
+        case .done:
+            node.surface.showUserNotification(title: "\(node.displayTitle) is done", body: "Claude finished its turn.")
+        default:
+            break
+        }
+    }
+
+    /// A terminal got keyboard focus: select its node, and a finished agent
+    /// counts as seen.
+    func surfaceDidFocus(_ surface: Ghostty.SurfaceView) {
+        guard let node = terminalNodes.first(where: { $0.surface === surface }) else { return }
+        // A focused terminal still on the canvas means the canvas is wanted.
+        if model.isBoard, node.body?.superview === node { showBoard(false) }
+        select(node: node)
+        if node.agentState?.phase == .done {
+            node.agentState?.phase = .idle
+            agentStateDidChange(node)
+        }
+    }
+
+    /// Pans to a node if it's off screen, zooming in to read it if asked.
+    func reveal(_ node: SuperNodeNodeView, zoomIn: Bool = false) {
+        let visible = world.convert(bounds, from: self)
+        if zoomIn {
+            zoom(to: node.item.frame)
+        } else if !visible.contains(node.item.frame) {
+            document.origin = CGPoint(
+                x: node.item.frame.midX - visible.width / 2,
+                y: node.item.frame.midY - visible.height / 2)
+            applyTransform()
+            scheduleSave()
+        }
+        select(node: node)
+    }
+
+    // MARK: Board
+
+    /// Switches between the canvas and the board of cards.
+    func showBoard(_ show: Bool) {
+        guard show != model.isBoard else { return }
+        model.isBoard = show
+        board.canvas = self
+        if show {
+            let host = NSHostingView(rootView: SuperNodeBoardView(
+                model: board,
+                background: Color(NSColor(ghostty.config.backgroundColor).blended(withFraction: 0.35, of: .black) ?? .black)))
+            host.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(host, positioned: .below, relativeTo: dock)
+            NSLayoutConstraint.activate([
+                host.topAnchor.constraint(equalTo: topAnchor),
+                host.bottomAnchor.constraint(equalTo: bottomAnchor),
+                host.leadingAnchor.constraint(equalTo: leadingAnchor),
+                host.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+            boardHost = host
+            world.isHidden = true
+            board.setRefreshing(true)
+            window?.makeFirstResponder(self)
+        } else {
+            board.openCard = nil
+            board.setRefreshing(false)
+            // Let the open card give its terminal back before the board goes.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.model.isBoard else { return }
+                self.boardHost?.removeFromSuperview()
+                self.boardHost = nil
+            }
+            world.isHidden = false
+        }
+        updateEmptyState()
+    }
+
+    func toggleBoard() {
+        showBoard(!model.isBoard)
+    }
+
+    func setColumns(_ columns: [SuperNodeColumn]) {
+        document.columns = columns
+        documentDidChange()
     }
 
     // MARK: Saving
@@ -1132,18 +1263,26 @@ struct SuperNodeDock: View {
 
             Divider().frame(height: 18).padding(.horizontal, 6)
 
-            button("minus.magnifyingglass", "Zoom out") { canvas?.zoomOut() }
-            Button {
-                canvas?.setZoom(1)
-            } label: {
-                Text("\(Int((model.zoom * 100).rounded()))%")
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .frame(width: 42, height: 26)
+            button(model.isBoard ? "point.3.connected.trianglepath.dotted" : "rectangle.split.3x1",
+                   model.isBoard ? "Show the canvas (⌘⇧B)" : "Show the board (⌘⇧B)") { canvas?.toggleBoard() }
+
+            // Zooming is for the canvas.
+            if !model.isBoard {
+                Divider().frame(height: 18).padding(.horizontal, 6)
+
+                button("minus.magnifyingglass", "Zoom out") { canvas?.zoomOut() }
+                Button {
+                    canvas?.setZoom(1)
+                } label: {
+                    Text("\(Int((model.zoom * 100).rounded()))%")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .frame(width: 42, height: 26)
+                }
+                .buttonStyle(.plain)
+                .help("Reset zoom")
+                button("plus.magnifyingglass", "Zoom in") { canvas?.zoomIn() }
+                button("arrow.up.left.and.arrow.down.right", "Zoom to fit") { canvas?.zoomToFit() }
             }
-            .buttonStyle(.plain)
-            .help("Reset zoom")
-            button("plus.magnifyingglass", "Zoom in") { canvas?.zoomIn() }
-            button("arrow.up.left.and.arrow.down.right", "Zoom to fit") { canvas?.zoomToFit() }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)

@@ -15,8 +15,17 @@ take the version from the first heading.
 - Drag the link icon on a node to another node to connect them, and double-click a connection to
   label how they relate. Right-click a connection between two terminals to send one's output to
   the other, or between a note and a terminal to send the note.
-- Agent nodes show RUNNING, NEEDS YOU or IDLE. Splitting a terminal (⌘D) opens a connected node
-  beside it; ⌘T opens a new node and ⌘W closes one.
+- Claude Code agent nodes report through hooks, without touching your Claude settings: RUNNING
+  (with the tool in use and how many subagents run), NEEDS YOU, DONE and IDLE. When Claude asks
+  for permission, Allow or Deny it from the bar over the node, or in the terminal as usual. A
+  notification tells you when an agent needs you or finishes, unless you're looking at it.
+  Agents reopen their own conversation after a relaunch.
+- ⌘⇧B (or the board button) turns the canvas into a board: terminals, agents and notes are cards
+  in To Do, In Progress, Review and Done, showing their status and last lines of output. Drag
+  cards between columns while they keep running, add or rename columns, and open a card for the
+  live terminal beside its priority, due date, description and comments.
+- Splitting a terminal (⌘D) opens a connected node beside it; ⌘T opens a new node and ⌘W
+  closes one.
 - A diff node works like an editor's source control panel: it lists staged changes and changes,
   shows the patch of the file you pick, and stages, unstages or discards a file or everything
   (new files go to the Trash). Commit from its message field, push, pull, and switch or create

@@ -977,7 +977,8 @@ class AppDelegate: NSObject,
             }
         }
 
-        return nil
+        // Wisp: terminals on the SuperNode canvas.
+        return SuperNodeController.shared.surface(forUUID: uuid)
     }
 
     // MARK: - Global State

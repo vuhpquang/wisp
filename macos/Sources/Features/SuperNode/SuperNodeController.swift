@@ -91,6 +91,8 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
             window.contentView = canvas
             window.backgroundColor = NSColor(ghostty.config.backgroundColor)
             self.canvas = canvas
+            SuperNodeHookCenter.shared.onEvent = { [weak canvas] event in canvas?.handle(event) }
+            SuperNodeHookCenter.shared.start()
         }
 
         isActive = true
@@ -124,6 +126,13 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         hide()
         return false
+    }
+
+    // Clicking a notification shows the window without the switch.
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard !isActive, canvas != nil else { return }
+        isActive = true
+        canvas?.setRefreshing(true)
     }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
@@ -170,6 +179,11 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
     @objc private func appWillTerminate(_ notification: Notification) {
         canvas?.save()
     }
+
+    /// A terminal on the canvas, for notifications to find when clicked.
+    func surface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
+        canvas?.terminalNodes.first { $0.surface.id == uuid }?.surface
+    }
 }
 
 // MARK: - Menu
@@ -199,6 +213,26 @@ extension SuperNodeController: NSMenuItemValidation {
 /// The SuperNode window. Clicking anywhere in a node brings it to the front,
 /// including clicks the terminal itself handles.
 final class SuperNodeWindow: NSWindow {
+    // ⌘⇧B switches between the canvas and the board, even from a terminal.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "b",
+           let canvas = contentView as? SuperNodeCanvasView {
+            canvas.toggleBoard()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let result = super.makeFirstResponder(responder)
+        if result, let surface = responder as? Ghostty.SurfaceView,
+           let canvas = contentView as? SuperNodeCanvasView {
+            canvas.surfaceDidFocus(surface)
+        }
+        return result
+    }
+
     override func sendEvent(_ event: NSEvent) {
         if event.type == .leftMouseDown || event.type == .rightMouseDown,
            let canvas = contentView as? SuperNodeCanvasView,

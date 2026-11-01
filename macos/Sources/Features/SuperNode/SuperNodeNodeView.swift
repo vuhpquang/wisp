@@ -60,11 +60,14 @@ class SuperNodeNodeView: NSView {
     override func layout() {
         super.layout()
         header.frame = NSRect(x: 0, y: 0, width: bounds.width, height: Self.headerHeight)
-        body?.frame = NSRect(
-            x: 0,
-            y: Self.headerHeight,
-            width: bounds.width,
-            height: max(0, bounds.height - Self.headerHeight))
+        // A terminal's body may be on loan to the board's card view.
+        if let body, body.superview === self {
+            body.frame = NSRect(
+                x: 0,
+                y: Self.headerHeight,
+                width: bounds.width,
+                height: max(0, bounds.height - Self.headerHeight))
+        }
         resizeGrip.frame = NSRect(x: bounds.width - 16, y: bounds.height - 16, width: 16, height: 16)
     }
 
@@ -399,6 +402,17 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
     let surface: Ghostty.SurfaceView
     private var cancellables: Set<AnyCancellable> = []
     private var headerRefreshPending = false
+    private var approvalBar: NSHostingView<SuperNodeApprovalBar>?
+
+    /// What Claude is doing, from its hooks. Nil until the first hook event;
+    /// until then the status is guessed from the terminal title.
+    var agentState: SuperNodeAgentState? {
+        didSet {
+            guard agentState != oldValue else { return }
+            refreshHeader()
+            updateApprovalBar()
+        }
+    }
 
     init(item: SuperNodeItem, surface: Ghostty.SurfaceView, ghostty: Ghostty.App) {
         self.surface = surface
@@ -448,6 +462,27 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
         return super.defaultTitle
     }
 
+    /// The status badge text and color, also shown on board cards.
+    var status: (text: String, color: NSColor)? {
+        if let agentState {
+            switch agentState.phase {
+            case .needsYou: return ("NEEDS YOU", .systemOrange)
+            case .done: return ("DONE", .systemGreen)
+            case .idle: return ("IDLE", .secondaryLabelColor)
+            case .working:
+                let count = agentState.subagents.count
+                return (count == 0 ? "RUNNING" : "RUNNING · \(count) AGENT\(count == 1 ? "" : "S")", .controlAccentColor)
+            }
+        }
+        switch AgentMonitorModel.agentStatus(of: surface) ?? (item.kind == .agent ? .idle : nil) {
+        case .needsInput: return ("NEEDS YOU", .systemOrange)
+        case .error: return ("ERROR", .systemRed)
+        case .working: return ("RUNNING", .controlAccentColor)
+        case .idle: return ("IDLE", .secondaryLabelColor)
+        case nil: return nil
+        }
+    }
+
     override func refreshHeader() {
         super.refreshHeader()
 
@@ -462,18 +497,72 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
             parts.append((directory as NSString).abbreviatingWithTildeInPath)
             if let branch = TabGitInfo.branch(at: directory) { parts.append(branch) }
         }
+        if agentState?.phase == .working, let tool = agentState?.tool { parts.insert(tool, at: 0) }
         header.subtitleLabel.stringValue = parts.joined(separator: " · ")
 
-        let status = AgentMonitorModel.agentStatus(of: surface)
-            ?? (item.kind == .agent ? .idle : nil)
-        switch status {
-        case .needsInput: header.badge.show("NEEDS YOU", color: .systemOrange)
-        case .error: header.badge.show("ERROR", color: .systemRed)
-        case .working: header.badge.show("RUNNING", color: .controlAccentColor)
-        case .idle: header.badge.show("IDLE", color: .secondaryLabelColor)
-        case nil: header.badge.show(nil, color: .clear)
+        if let status {
+            header.badge.show(status.text, color: status.color)
+        } else {
+            header.badge.show(nil, color: .clear)
         }
         canvas?.needsDisplay = true
+    }
+
+    // MARK: Permission requests
+
+    private func updateApprovalBar() {
+        guard let permission = agentState?.permission else {
+            approvalBar?.removeFromSuperview()
+            approvalBar = nil
+            return
+        }
+        let bar = SuperNodeApprovalBar(permission: permission) { [weak self] allow in
+            self?.answer(allow: allow)
+        }
+        if let approvalBar {
+            approvalBar.rootView = bar
+        } else {
+            let host = NSHostingView(rootView: bar)
+            addSubview(host, positioned: .above, relativeTo: body)
+            approvalBar = host
+            needsLayout = true
+        }
+    }
+
+    /// Answers the held permission request; Claude's own prompt closes too.
+    func answer(allow: Bool) {
+        guard var state = agentState, let permission = state.permission else { return }
+        SuperNodeHooks.answer(permission.id, with: allow ? "allow" : "deny")
+        state.permission = nil
+        state.phase = .working
+        agentState = state
+        canvas?.agentStateDidChange(self)
+    }
+
+    override func layout() {
+        super.layout()
+        if let approvalBar {
+            let height = approvalBar.fittingSize.height
+            approvalBar.frame = NSRect(x: 8, y: Self.headerHeight + 8, width: bounds.width - 16, height: height)
+        }
+    }
+
+    // MARK: Lending the terminal to the board
+
+    /// Takes the terminal out of the node so a board card can show it.
+    func lendBody() -> NSView? {
+        guard let body, body.superview === self else { return nil }
+        body.removeFromSuperview()
+        return body
+    }
+
+    /// Puts the terminal back after a board card closes.
+    func returnBody() {
+        guard let body, body.superview !== self else { return }
+        body.removeFromSuperview()
+        body.autoresizingMask = []
+        addSubview(body, positioned: .below, relativeTo: header)
+        needsLayout = true
     }
 
     override var needsConfirmClose: Bool {
@@ -579,5 +668,44 @@ final class SuperNodeGroupView: SuperNodeNodeView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let hit = super.hitTest(point) else { return nil }
         return hit === self ? nil : hit
+    }
+}
+
+// MARK: - Approval bar
+
+/// Shown over an agent's terminal while Claude waits for permission.
+struct SuperNodeApprovalBar: View {
+    let permission: SuperNodeAgentState.Permission
+    let onAnswer: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(permission.answerable
+                     ? "Claude wants to use \(permission.tool)"
+                     : "Claude is asking you something. Answer in the terminal.")
+                    .font(.system(size: 12, weight: .semibold))
+                if let summary = permission.summary {
+                    Text(summary)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 8)
+            if permission.answerable {
+                Button("Deny") { onAnswer(false) }
+                Button("Allow") { onAnswer(true) }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .controlSize(.small)
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange.opacity(0.6)))
+        .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
     }
 }
