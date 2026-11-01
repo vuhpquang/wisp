@@ -54,7 +54,7 @@ struct SuperNodeComment: Codable, Identifiable, Equatable {
 /// One node on the canvas.
 struct SuperNodeItem: Codable, Identifiable, Equatable {
     enum Kind: String, Codable {
-        case terminal, agent, note, diff, group, editor
+        case terminal, agent, note, diff, group, editor, web
 
         var symbol: String {
             switch self {
@@ -64,6 +64,7 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
             case .diff: "plusminus"
             case .group: "square.dashed"
             case .editor: "doc.text"
+            case .web: "globe"
             }
         }
 
@@ -74,6 +75,7 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
             case .diff: CGSize(width: 580, height: 460)
             case .group: CGSize(width: 900, height: 560)
             case .editor: CGSize(width: 620, height: 480)
+            case .web: CGSize(width: 720, height: 520)
             }
         }
 
@@ -84,6 +86,7 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
             case .diff: CGSize(width: 280, height: 160)
             case .group: CGSize(width: 200, height: 120)
             case .editor: CGSize(width: 240, height: 140)
+            case .web: CGSize(width: 260, height: 160)
             }
         }
     }
@@ -107,6 +110,9 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
 
     /// The file an editor node shows.
     var file: String?
+
+    /// The page a web node shows.
+    var url: String?
 
     /// The Claude Code session of an agent node, to resume after a relaunch.
     var sessionID: String?

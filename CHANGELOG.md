@@ -39,8 +39,12 @@ take the version from the first heading.
   open it at its first change, open files from the bar or a terminal's menu, or drop files on the
   canvas (dropped folders open a terminal there). When an agent changes an open file, the editor
   reloads it, or marks it CHANGED ON DISK if you have unsaved edits.
-- Pan by scrolling or dragging the canvas, zoom by pinching or ⌘-scrolling. Moving a group moves
-  the nodes inside it. The canvas is saved between launches.
+- Web nodes show a page beside your terminals, with an address bar, back and forward. When a
+  terminal prints a local address, such as a dev server's http://localhost:3000, a globe button
+  on it opens the page in a connected web node.
+- Pan by scrolling or dragging the canvas, zoom by pinching or ⌘-scrolling. The minimap in the
+  corner shows the whole canvas; click or drag in it to move there. Moving a group moves the
+  nodes inside it. The canvas is saved between launches.
 - With tmux installed, every terminal on the canvas runs in its own tmux session and keeps
   running when you quit Wisp: open Wisp again and the node is right where it was, agent and all.
   Its scrollback is saved too, so after the Mac restarts the node comes back in its folder with

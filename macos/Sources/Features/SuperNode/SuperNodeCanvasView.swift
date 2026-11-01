@@ -29,6 +29,7 @@ final class SuperNodeCanvasModel: ObservableObject {
     @Published var zoom: CGFloat = 1
     @Published var isEmpty = true
     @Published var isBoard = false
+    @Published var showsMinimap = UserDefaults.standard.object(forKey: SuperNodeMinimap.visibleKey) as? Bool ?? true
 }
 
 /// Holds the node views. Its bounds are scaled and offset to pan and zoom.
@@ -55,6 +56,7 @@ final class SuperNodeCanvasView: NSView {
     let board = SuperNodeBoardModel()
     private var boardHost: NSView?
     private var emptyHint: NSView!
+    private let minimap = SuperNodeMinimap()
 
     private var selectedEdge: UUID?
     private var linkDrag: (from: SuperNodeNodeView, to: CGPoint)?
@@ -85,11 +87,19 @@ final class SuperNodeCanvasView: NSView {
         addSubview(dock)
         self.dock = dock
 
+        minimap.canvas = self
+        minimap.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(minimap)
+
         NSLayoutConstraint.activate([
             hint.centerXAnchor.constraint(equalTo: centerXAnchor),
             hint.centerYAnchor.constraint(equalTo: centerYAnchor),
             dock.centerXAnchor.constraint(equalTo: centerXAnchor),
             dock.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            minimap.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            minimap.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            minimap.widthAnchor.constraint(equalToConstant: SuperNodeMinimap.size.width),
+            minimap.heightAnchor.constraint(equalToConstant: SuperNodeMinimap.size.height),
         ])
 
         registerForDraggedTypes([.fileURL])
@@ -116,6 +126,31 @@ final class SuperNodeCanvasView: NSView {
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+
+    // The minimap follows everything that redraws the canvas: panning,
+    // zooming, and nodes moving, resizing, appearing or closing.
+    override var needsDisplay: Bool {
+        didSet { if needsDisplay { minimap.needsDisplay = true } }
+    }
+
+    /// The part of the world the canvas shows.
+    var visibleWorldRect: CGRect {
+        world.convert(bounds, from: self)
+    }
+
+    /// Pans so a world point is in the middle of the canvas.
+    func center(on point: CGPoint) {
+        let visible = visibleWorldRect
+        document.origin = CGPoint(x: point.x - visible.width / 2, y: point.y - visible.height / 2)
+        applyTransform()
+        scheduleSave()
+    }
+
+    func toggleMinimap() {
+        model.showsMinimap.toggle()
+        UserDefaults.standard.set(model.showsMinimap, forKey: SuperNodeMinimap.visibleKey)
+        updateEmptyState()
+    }
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func layout() {
@@ -287,6 +322,7 @@ final class SuperNodeCanvasView: NSView {
         if from.item.kind == .note { return .systemYellow }
         if to.item.kind == .diff { return .systemGreen }
         if to.item.kind == .editor { return .systemTeal }
+        if to.item.kind == .web { return .systemBlue }
         if from.item.kind == .agent || to.item.kind == .agent { return .systemPurple }
         return .controlAccentColor
     }
@@ -448,6 +484,7 @@ final class SuperNodeCanvasView: NSView {
         menu.addItem(item("New Note", "note.text") { [weak self] in self?.addNode(.note, at: point) })
         menu.addItem(item("New Diff…", "plusminus") { [weak self] in self?.addDiff(at: point) })
         menu.addItem(item("Open File…", "doc.text") { [weak self] in self?.openFile(at: point) })
+        menu.addItem(item("New Web Page", "globe") { [weak self] in self?.addNode(.web, at: point) })
         menu.addItem(item("New Group", "square.dashed") { [weak self] in self?.addNode(.group, at: point) })
         menu.addItem(.separator())
         menu.addItem(item("Zoom to Fit", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.zoomToFit() })
@@ -576,6 +613,8 @@ final class SuperNodeCanvasView: NSView {
             view = SuperNodeGroupView(item: item)
         case .editor:
             view = SuperNodeEditorView(item: item)
+        case .web:
+            view = SuperNodeWebView(item: item)
         }
 
         view.canvas = self
@@ -841,6 +880,29 @@ final class SuperNodeCanvasView: NSView {
         editor.focus()
     }
 
+    /// Opens a page in a web node beside `source` and connects them, or loads
+    /// it in the web node already connected.
+    func openWeb(_ address: String, from source: SuperNodeNodeView) {
+        let connected = document.edges.compactMap { edge -> SuperNodeWebView? in
+            if edge.from == source.item.id { return node(edge.to) as? SuperNodeWebView }
+            if edge.to == source.item.id { return node(edge.from) as? SuperNodeWebView }
+            return nil
+        }
+        if let web = connected.first {
+            web.load(address)
+            select(node: web)
+            return
+        }
+        let size = SuperNodeItem.Kind.web.defaultSize
+        let frame = CGRect(x: source.item.frame.maxX + 80, y: source.item.frame.minY, width: size.width, height: size.height)
+        var item = SuperNodeItem(kind: .web, frame: frame)
+        item.url = address
+        guard let web = addNodeView(for: item, restoring: false) else { return }
+        select(node: web)
+        connect(source, to: web, label: "preview")
+        documentDidChange()
+    }
+
     /// The folder of the terminal connected into a diff node, if any.
     func sourceDirectory(for node: SuperNodeNodeView) -> String? {
         for edge in document.edges where edge.to == node.item.id {
@@ -1042,6 +1104,7 @@ final class SuperNodeCanvasView: NSView {
 
     private func refreshDiffs() {
         readPanes()
+        for terminal in terminalNodes { terminal.findDevServer() }
         for node in nodeViews {
             (node as? SuperNodeDiffView)?.reload()
             (node as? SuperNodeEditorView)?.checkDisk()
@@ -1056,6 +1119,7 @@ final class SuperNodeCanvasView: NSView {
     private func updateEmptyState() {
         model.isEmpty = nodeViews.isEmpty
         emptyHint?.isHidden = !nodeViews.isEmpty || model.isBoard
+        minimap.isHidden = nodeViews.isEmpty || model.isBoard || !model.showsMinimap
     }
 
     // MARK: Agent hooks
@@ -1341,6 +1405,7 @@ struct SuperNodeDock: View {
             button("note.text", "New note") { canvas?.addNode(.note) }
             button("plusminus", "New diff") { canvas?.addDiff(at: nil) }
             button("doc.text", "Open a file") { canvas?.openFile(at: nil) }
+            button("globe", "New web page") { canvas?.addNode(.web) }
             button("square.dashed", "New group") { canvas?.addNode(.group) }
 
             Divider().frame(height: 18).padding(.horizontal, 6)
@@ -1364,6 +1429,9 @@ struct SuperNodeDock: View {
                 .help("Reset zoom")
                 button("plus.magnifyingglass", "Zoom in") { canvas?.zoomIn() }
                 button("arrow.up.left.and.arrow.down.right", "Zoom to fit") { canvas?.zoomToFit() }
+                button(model.showsMinimap ? "map.fill" : "map", model.showsMinimap ? "Hide the minimap" : "Show the minimap") {
+                    canvas?.toggleMinimap()
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -1403,5 +1471,123 @@ private struct SuperNodeEmptyHint: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
+    }
+}
+
+// MARK: - Minimap
+
+/// The whole canvas in miniature, with the visible part outlined. Click or
+/// drag in it to move there.
+final class SuperNodeMinimap: NSView {
+    weak var canvas: SuperNodeCanvasView?
+
+    static let size = CGSize(width: 200, height: 130)
+    static let visibleKey = "SuperNodeShowsMinimap"
+
+    override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// The world rect the minimap covers, and how to map it into the view.
+    private var mapping: (world: CGRect, scale: CGFloat, offset: CGPoint)? {
+        guard let canvas, !canvas.nodeViews.isEmpty else { return nil }
+        var world = canvas.visibleWorldRect
+        for node in canvas.nodeViews { world = world.union(node.item.frame) }
+        world = world.insetBy(dx: -40, dy: -40)
+        let inset = bounds.insetBy(dx: 6, dy: 6)
+        let scale = min(inset.width / world.width, inset.height / world.height)
+        let offset = CGPoint(
+            x: inset.minX + (inset.width - world.width * scale) / 2,
+            y: inset.minY + (inset.height - world.height * scale) / 2)
+        return (world, scale, offset)
+    }
+
+    private func viewRect(_ rect: CGRect, _ map: (world: CGRect, scale: CGFloat, offset: CGPoint)) -> CGRect {
+        CGRect(
+            x: map.offset.x + (rect.minX - map.world.minX) * map.scale,
+            y: map.offset.y + (rect.minY - map.world.minY) * map.scale,
+            width: max(2, rect.width * map.scale),
+            height: max(2, rect.height * map.scale))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.85).cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        guard let canvas, let map = mapping else { return }
+
+        for node in canvas.nodeViews {
+            let rect = viewRect(node.item.frame, map)
+            let color = node.item.color.nsColor ?? Self.color(for: node.item.kind)
+            if node.item.kind == .group {
+                color.withAlphaComponent(0.6).setStroke()
+                let path = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5))
+                path.lineWidth = 1
+                path.stroke()
+            } else {
+                color.withAlphaComponent(node.isSelected ? 0.95 : 0.6).setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 1.5, yRadius: 1.5).fill()
+            }
+        }
+
+        let visible = viewRect(canvas.visibleWorldRect, map)
+        NSColor.labelColor.withAlphaComponent(0.08).setFill()
+        visible.fill()
+        NSColor.labelColor.withAlphaComponent(0.7).setStroke()
+        let outline = NSBezierPath(rect: visible.insetBy(dx: 0.5, dy: 0.5))
+        outline.lineWidth = 1
+        outline.stroke()
+    }
+
+    private static func color(for kind: SuperNodeItem.Kind) -> NSColor {
+        switch kind {
+        case .terminal: .controlAccentColor
+        case .agent: .systemPurple
+        case .note: .systemYellow
+        case .diff: .systemGreen
+        case .editor: .systemTeal
+        case .web: .systemBlue
+        case .group: .systemGray
+        }
+    }
+
+    /// The mapping when a drag began, kept so the map holds still under the
+    /// pointer while the visible area moves.
+    private var dragMapping: (world: CGRect, scale: CGFloat, offset: CGPoint)?
+
+    override func mouseDown(with event: NSEvent) {
+        dragMapping = mapping
+        moveCanvas(to: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        moveCanvas(to: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragMapping = nil
+    }
+
+    private func moveCanvas(to event: NSEvent) {
+        guard let canvas, let map = dragMapping ?? mapping else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        canvas.center(on: CGPoint(
+            x: map.world.minX + (point.x - map.offset.x) / map.scale,
+            y: map.world.minY + (point.y - map.offset.y) / map.scale))
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        canvas?.scrollWheel(with: event)
     }
 }

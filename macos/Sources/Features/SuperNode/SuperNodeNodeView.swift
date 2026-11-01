@@ -102,6 +102,7 @@ class SuperNodeNodeView: NSView {
         case .diff: "Changes"
         case .group: "Group"
         case .editor: "Editor"
+        case .web: "Web"
         }
     }
 
@@ -208,9 +209,11 @@ final class SuperNodeHeaderView: NSView {
     }
 
     /// Adds a button before the link handle and close button.
-    func addButton(symbol: String, tooltip: String, target: AnyObject, action: Selector) {
+    @discardableResult
+    func addButton(symbol: String, tooltip: String, target: AnyObject, action: Selector) -> NSButton {
         let button = Self.button(symbol: symbol, tooltip: tooltip, target: target, action: action)
         buttons.insertArrangedSubview(button, at: max(0, buttons.arrangedSubviews.count - 2))
+        return button
     }
 
     func updateTint(_ color: NSColor?) {
@@ -404,6 +407,16 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
     let usesTmux: Bool
     /// The program in the tmux pane, such as zsh or claude, read every few seconds.
     var paneCommand: String?
+    private var webButton: NSButton?
+
+    /// The last local address the terminal printed, such as a dev server's.
+    var devServerURL: String? {
+        didSet {
+            guard devServerURL != oldValue else { return }
+            webButton?.isHidden = devServerURL == nil
+            webButton?.toolTip = devServerURL.map { "Open \($0) in a web node" }
+        }
+    }
     private var cancellables: Set<AnyCancellable> = []
     private var headerRefreshPending = false
     private var permissionPanel: NSHostingView<SuperNodePermissionPanel>?
@@ -430,6 +443,8 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
         body = NSHostingView(rootView: wrapper)
         layer?.backgroundColor = NSColor(ghostty.config.backgroundColor).cgColor
 
+        webButton = header.addButton(symbol: "globe", tooltip: "Open in a web node", target: self, action: #selector(openDevServer))
+        webButton?.isHidden = true
         header.addButton(
             symbol: "plusminus",
             tooltip: "Show the changes in this folder",
@@ -610,6 +625,28 @@ final class SuperNodeTerminalView: SuperNodeNodeView {
 
     @objc private func showChanges() {
         canvas?.openDiff(for: self)
+    }
+
+    @objc private func openDevServer() {
+        guard let devServerURL else { return }
+        canvas?.openWeb(devServerURL, from: self)
+    }
+
+    private static let localAddress = try? NSRegularExpression(
+        pattern: #"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|[a-z0-9-]+\.localhost):\d{2,5}[^\s"'<>)\]]*"#,
+        options: [.caseInsensitive])
+
+    /// Looks for a local address on screen, as dev servers print when they start.
+    func findDevServer() {
+        let text = surface.cachedVisibleContents.get()
+        guard let regex = Self.localAddress else { return }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        guard let last = matches.last, let range = Range(last.range, in: text) else { return }
+        var address = String(text[range])
+        while let end = address.last, ".,;:".contains(end) { address.removeLast() }
+        devServerURL = address
+            .replacingOccurrences(of: "0.0.0.0", with: "localhost")
+            .replacingOccurrences(of: "[::]", with: "localhost")
     }
 
     override func tearDown() {
