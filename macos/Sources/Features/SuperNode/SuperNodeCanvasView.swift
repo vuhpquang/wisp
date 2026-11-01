@@ -175,6 +175,8 @@ final class SuperNodeCanvasView: NSView {
                 panel.widthAnchor.constraint(equalToConstant: SuperNodeChatPanel.width),
             ])
             chatPanel = panel
+            // Start Claude Code now, so the first message doesn't wait for it.
+            chat.prepare()
         } else {
             chatPanel?.removeFromSuperview()
             chatPanel = nil

@@ -67,6 +67,7 @@ enum SuperNodeCommands {
     - focus '{"id":"…"}': move the view to a node. fit: show every node. view '{"x":…,"y":…,"zoom":…}': center the view on a point, zoom 0.15 to 1.5.
     - arrange '{"layout":"flow"}': tidy nodes, all or those in "ids". "flow" lays them out left to right along their connections; "grid" packs them in rows.
     - group '{"title":"…","ids":["…"]}': draw a group around nodes.
+    - batch '{"steps":[{"command":"create","kind":"note","title":"Plan","as":"plan"},{"command":"connect","from":"$plan","to":"…"}]}': run several commands in one go, in order. A step with "as" names the node it creates or changes; later steps refer to it as "$name". Prefer one batch over several commands: it's much faster.
     Ids can be shortened to their first 8 characters. Each command prints JSON.
     """
 }
@@ -179,9 +180,41 @@ extension SuperNodeCanvasView {
             return ["view": viewDescription()]
         case "arrange": return arrange(arguments)
         case "group": return group(arguments)
+        case "batch": return batch(arguments)
         default:
             return ["error": "Unknown command \"\(command)\". Run supernode help."]
         }
+    }
+
+    /// Runs several commands in order. A step's "as" names the node it made
+    /// or changed, and later steps use "$name" in place of an id.
+    private func batch(_ arguments: [String: Any]) -> Any {
+        guard let steps = arguments["steps"] as? [[String: Any]] else {
+            return ["error": "Give \"steps\": a list of {\"command\": …} objects."]
+        }
+        var names: [String: String] = [:]
+        func resolve(_ value: Any) -> Any {
+            if let text = value as? String, text.hasPrefix("$"), let id = names[String(text.dropFirst())] { return id }
+            if let list = value as? [Any] { return list.map(resolve) }
+            return value
+        }
+        var results: [Any] = []
+        for step in steps {
+            guard let command = step["command"] as? String, command != "batch" else {
+                results.append(["error": "Each step needs a \"command\" other than batch."])
+                continue
+            }
+            var stepArguments = step.filter { $0.key != "command" && $0.key != "as" }
+            for (key, value) in stepArguments { stepArguments[key] = resolve(value) }
+            let result = run(command: command, arguments: stepArguments)
+            if let name = step["as"] as? String, let dictionary = result as? [String: Any] {
+                // The node a step made or changed, whatever the command.
+                let node = (dictionary["created"] ?? dictionary["updated"] ?? dictionary["focused"]) as? [String: Any]
+                if let id = node?["id"] as? String ?? dictionary["focused"] as? String { names[name] = id }
+            }
+            results.append(result)
+        }
+        return ["steps": results]
     }
 
     // MARK: Finding nodes

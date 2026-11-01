@@ -60,7 +60,9 @@ take the version from the first heading.
   Ask it to change the canvas in your own words: create, edit and delete nodes, connect them,
   type into terminals, group nodes, move to a node, fit the canvas, or tidy it along its
   connections. It works through a `supernode` command that is the only shell command it may
-  run. Each project keeps its own conversation; pick the model at the top of the panel.
+  run. Each project keeps its own conversation; pick the model at the top of the panel (Sonnet
+  by default). Claude Code starts when the panel opens and stays running, and several changes
+  go in one step, so a request with several changes takes seconds, not minutes.
 - ⌘K opens a command palette: type to jump to any node, run a canvas command, or switch project.
 - ⌘Z and ⇧⌘Z undo and redo canvas changes: adding, closing, moving, resizing, connecting,
   renaming and recoloring nodes. A closed agent comes back resuming its conversation.

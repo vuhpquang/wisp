@@ -16,16 +16,22 @@ struct SuperNodeChatMessage: Codable, Identifiable, Equatable {
     var text: String
 }
 
-/// The chat beside the canvas. Each message runs Claude Code headless
-/// (`claude -p`), signed in as the user's Claude Code, resuming the same
-/// conversation. Claude changes the canvas with the `supernode` command,
-/// which is the one shell command it's allowed to run.
+/// The chat beside the canvas. It keeps one Claude Code process running
+/// headless (`claude -p` with stream-json input and output), signed in as the
+/// user's Claude Code, and sends each message to it, so only the first message
+/// waits for Claude Code to start, and that is done when the panel opens.
+/// Claude changes the canvas with the `supernode` command, the one shell
+/// command it may run.
 final class SuperNodeChatModel: ObservableObject {
     @Published private(set) var messages: [SuperNodeChatMessage] = []
     @Published private(set) var isRunning = false
     @Published var draft = ""
-    @Published var model: String = UserDefaults.standard.string(forKey: SuperNodeChatModel.modelKey) ?? "" {
-        didSet { UserDefaults.standard.set(model, forKey: Self.modelKey) }
+    @Published var model: String = UserDefaults.standard.string(forKey: SuperNodeChatModel.modelKey) ?? "sonnet" {
+        didSet {
+            UserDefaults.standard.set(model, forKey: Self.modelKey)
+            // A running process keeps its model; start the next one with the new model.
+            if model != oldValue { restart() }
+        }
     }
 
     weak var canvas: SuperNodeCanvasView?
@@ -34,10 +40,17 @@ final class SuperNodeChatModel: ObservableObject {
 
     private(set) var sessionID: String?
     private var process: Process?
+    private var input: FileHandle?
     private var buffer = Data()
+    private var starting = false
+    /// Messages sent while Claude Code was still starting.
+    private var pending: [Data] = []
+    /// Set when the process is ended on purpose, so it isn't reported as an error.
+    private var stopping = false
 
     static let modelKey = "SuperNodeChatModel"
-    static let models: [(id: String, name: String)] = [("", "Default"), ("sonnet", "Sonnet"), ("opus", "Opus"), ("haiku", "Haiku")]
+    /// Sonnet first: it answers quickly and handles canvas commands well.
+    static let models: [(id: String, name: String)] = [("sonnet", "Sonnet"), ("haiku", "Haiku"), ("opus", "Opus"), ("", "Default")]
 
     /// The conversation saved with the canvas.
     struct Saved: Codable {
@@ -57,16 +70,40 @@ final class SuperNodeChatModel: ObservableObject {
 
     // MARK: Sending
 
-    func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isRunning else { return }
-        draft = ""
-        append(.user, text)
-        run(text)
+    /// Starts Claude Code ahead of the first message, as the panel opens.
+    func prepare() {
+        startIfNeeded()
     }
 
+    func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isRunning, let canvas else { return }
+        draft = ""
+        append(.user, text)
+        isRunning = true
+
+        // The canvas as it is now goes with each message, so Claude rarely
+        // needs to list it first.
+        let listing = (try? JSONSerialization.data(withJSONObject: canvas.listing(), options: [.sortedKeys, .withoutEscapingSlashes]))
+            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        let content = "<canvas>\n\(listing)\n</canvas>\n\n\(text)"
+        let message: [String: Any] = ["type": "user", "message": ["role": "user", "content": [["type": "text", "text": content]]]]
+        guard var line = try? JSONSerialization.data(withJSONObject: message) else { return }
+        line.append(10)
+
+        if let input, process?.isRunning == true {
+            write(line, to: input)
+        } else {
+            pending.append(line)
+            startIfNeeded()
+        }
+    }
+
+    /// Stops the current reply. The conversation goes on with the next message.
     func stop() {
-        process?.terminate()
+        guard let process else { return }
+        stopping = true
+        process.terminate()
     }
 
     /// Starts a new conversation.
@@ -77,48 +114,87 @@ final class SuperNodeChatModel: ObservableObject {
         onChange?()
     }
 
+    private func restart() {
+        guard let process, !isRunning else { return }
+        stopping = true
+        process.terminate()
+    }
+
     private func append(_ role: SuperNodeChatMessage.Role, _ text: String) {
         messages.append(SuperNodeChatMessage(role: role, text: text))
         onChange?()
     }
 
-    private func run(_ text: String) {
-        guard let canvas else { return }
-        guard let claude = SuperNodeClaudeCLI.shared.path else {
+    private func write(_ data: Data, to handle: FileHandle) {
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            isRunning = false
+            append(.error, "Couldn't reach Claude Code: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: The Claude Code process
+
+    private func startIfNeeded() {
+        guard process == nil, !starting, canvas != nil else { return }
+        starting = true
+        // Finding `claude` runs the login shell once; keep it off the main thread.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let cli = SuperNodeClaudeCLI.shared
+            DispatchQueue.main.async { [weak self] in self?.launch(cli) }
+        }
+    }
+
+    private func launch(_ cli: SuperNodeClaudeCLI) {
+        starting = false
+        guard process == nil, let canvas else { return }
+        guard let claude = cli.path else {
+            pending = []
+            isRunning = false
             append(.error, "Couldn't find Claude Code. Install it, or make sure `claude` is on your shell's PATH.")
             return
         }
         SuperNodeCommands.install()
 
         var arguments = [
-            "-p", text,
+            "-p",
+            "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
-            "--append-system-prompt", instructions(for: canvas),
-            // None of the user's MCP servers: they slow the start and distract.
+            // A short prompt of our own and only the tools the canvas needs keep
+            // each request small, which saves the user's plan.
+            "--system-prompt", Self.instructions,
+            "--tools", "Bash,Read,Grep,Glob",
+            "--disable-slash-commands",
+            // The user's own hooks, plugins and MCP servers would run on every
+            // tool call and slow each step down.
+            "--setting-sources", "project,local",
             "--strict-mcp-config",
-            // Nobody can answer a question in headless mode, so it would wait forever.
-            "--disallowedTools", "AskUserQuestion", "ExitPlanMode", "EnterPlanMode", "ToolSearch", "Task", "Agent",
             // Claude may run the canvas command and read files, nothing else.
             "--allowedTools", "Bash(supernode:*)", "Bash(\"\(SuperNodeCommands.scriptURL.path)\":*)", "Read", "Grep", "Glob",
         ]
         if let sessionID { arguments += ["--resume", sessionID] }
         if !model.isEmpty { arguments += ["--model", model] }
 
+        // An empty folder of its own, so no project's CLAUDE.md is read.
+        let folder = SuperNodeHooks.directory.appendingPathComponent("chat")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: claude)
         process.arguments = arguments
-        process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-        var environment = SuperNodeClaudeCLI.shared.environment
+        process.currentDirectoryURL = folder
+        var environment = cli.environment
         // `supernode` is on the PATH, so commands read plainly.
         let bin = SuperNodeCommands.scriptURL.deletingLastPathComponent().path
         environment["PATH"] = bin + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
         environment[SuperNodeHooks.directoryVariable] = SuperNodeHooks.directory.path
         environment[SuperNodeCommands.canvasVariable] = canvas.projectID.uuidString
         process.environment = environment
-        process.standardInput = FileHandle.nullDevice
 
-        let output = Pipe(), errors = Pipe()
+        let stdin = Pipe(), output = Pipe(), errors = Pipe()
+        process.standardInput = stdin
         process.standardOutput = output
         process.standardError = errors
         buffer = Data()
@@ -126,27 +202,48 @@ final class SuperNodeChatModel: ObservableObject {
             let data = handle.availableData
             DispatchQueue.main.async { self?.receive(data) }
         }
+        // Keep only the end of stderr, read as it comes so the pipe never fills.
+        var errorTail = Data()
+        let errorLock = NSLock()
+        errors.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            errorLock.lock()
+            errorTail.append(data)
+            if errorTail.count > 8000 { errorTail = errorTail.suffix(8000) }
+            errorLock.unlock()
+        }
         process.terminationHandler = { [weak self] process in
-            let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            errorLock.lock()
+            let errorText = String(decoding: errorTail, as: UTF8.self)
+            errorLock.unlock()
             DispatchQueue.main.async {
                 output.fileHandleForReading.readabilityHandler = nil
-                guard let self else { return }
-                self.isRunning = false
+                errors.fileHandleForReading.readabilityHandler = nil
+                guard let self, self.process === process else { return }
                 self.process = nil
-                if process.terminationReason == .uncaughtSignal {
-                    self.append(.error, "Stopped.")
-                } else if process.terminationStatus != 0 {
+                self.input = nil
+                let wasRunning = self.isRunning
+                self.isRunning = false
+                if self.stopping {
+                    if wasRunning { self.append(.error, "Stopped.") }
+                } else if wasRunning || process.terminationStatus != 0 {
                     let message = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.append(.error, message.isEmpty ? "Claude Code exited with status \(process.terminationStatus)." : message)
+                    self.append(.error, message.isEmpty ? "Claude Code exited with status \(process.terminationStatus)." : String(message.suffix(600)))
                 }
+                self.stopping = false
+                self.pending = []
             }
         }
 
         do {
             try process.run()
             self.process = process
-            isRunning = true
+            input = stdin.fileHandleForWriting
+            for line in pending { write(line, to: stdin.fileHandleForWriting) }
+            pending = []
         } catch {
+            pending = []
+            isRunning = false
             append(.error, "Couldn't start Claude Code: \(error.localizedDescription)")
         }
     }
@@ -181,6 +278,8 @@ final class SuperNodeChatModel: ObservableObject {
             }
             canvas?.needsDisplay = true
         case "result":
+            // The turn is over; the process waits for the next message.
+            isRunning = false
             if event["is_error"] as? Bool == true, let result = event["result"] as? String {
                 append(.error, result)
             }
@@ -201,7 +300,11 @@ final class SuperNodeChatModel: ObservableObject {
             var detail = ""
             if let start = rest.firstIndex(of: "{"), let end = rest.lastIndex(of: "}"),
                let object = (try? JSONSerialization.jsonObject(with: Data(rest[start...end].utf8))) as? [String: Any] {
-                detail = ["kind", "title", "layout", "label", "text"].compactMap { object[$0] as? String }.first ?? ""
+                if let steps = object["steps"] as? [[String: Any]] {
+                    detail = steps.compactMap { $0["command"] as? String }.joined(separator: ", ")
+                } else {
+                    detail = ["kind", "title", "layout", "label", "text"].compactMap { object[$0] as? String }.first ?? ""
+                }
             }
             return "\(verb)\(detail.isEmpty ? "" : ": \(detail.prefix(60))")"
         }
@@ -211,10 +314,8 @@ final class SuperNodeChatModel: ObservableObject {
 
     // MARK: Instructions
 
-    private func instructions(for canvas: SuperNodeCanvasView) -> String {
-        let listing = (try? JSONSerialization.data(withJSONObject: canvas.listing(), options: [.sortedKeys, .withoutEscapingSlashes]))
-            .map { String(decoding: $0, as: UTF8.self) } ?? "{}"
-        return """
+    private static var instructions: String {
+        """
         You are the assistant in the chat panel of Wisp SuperNode, a canvas where terminals, coding agents (Claude Code, Codex, Gemini), notes, git diffs, file editors, web pages and groups are nodes, connected by labeled lines that show how the work fits together. The user talks to you from beside the canvas and wants you to change it: create, edit, delete, connect and arrange nodes, type into terminals, and move the view.
 
         Change the canvas only with this command, run with the Bash tool:
@@ -223,10 +324,9 @@ final class SuperNodeChatModel: ObservableObject {
 
         \(SuperNodeCommands.usage)
 
-        The canvas when this message was sent (canvas points; x grows right, y grows down):
-        \(listing)
+        Each user message starts with the canvas as it is now, between <canvas> tags (canvas points; x grows right, y grows down), so you rarely need to list it.
 
-        Act with the command first, then reply in a sentence or two saying what changed. Don't ask the user questions; when something is unclear, make a sensible choice and say what you chose. Place new nodes so they don't overlap others. Reply in the user's language.
+        Do everything a message asks in as few commands as you can, ideally one batch, then reply in a sentence or two saying what changed. Don't ask the user questions; when something is unclear, make a sensible choice and say what you chose. Place new nodes so they don't overlap others. Reply in the user's language.
         """
     }
 }
