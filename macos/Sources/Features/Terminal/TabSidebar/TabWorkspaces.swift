@@ -74,9 +74,13 @@ final class TabWorkspaceStore: ObservableObject {
             return windows
         }
 
-        return windows.filter { window in
-            (window as? TerminalWindow)?.isTabPinned == true || workspaceID(of: window) == activeID
-        }
+        // The sidebar always shows pinned tabs first, but the window's real tab
+        // order can have them mixed in (e.g. after restoring or moving tabs
+        // between workspaces). Put them first here too so ⌘1.. match the tiles.
+        let isPinned = { (window: NSWindow) in (window as? TerminalWindow)?.isTabPinned == true }
+        let pinned = windows.filter(isPinned)
+        let others = windows.filter { !isPinned($0) && workspaceID(of: $0) == activeID }
+        return pinned + others
     }
 
     func lastSelectedWindow(in id: UUID) -> NSWindow? {
