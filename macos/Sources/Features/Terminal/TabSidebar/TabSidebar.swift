@@ -343,6 +343,30 @@ final class TabSidebarModel: ObservableObject {
         }
     }
 
+    /// The tab's title. A renamed tab keeps its name; a title the shell set to
+    /// the working directory (`…/momo/mini-app`) shows only the last folder
+    /// (`/mini-app`), while titles like a running command are left alone.
+    static func displayTitle(of window: NSWindow, pwd: String?) -> String {
+        let title = window.title
+        if title.isEmpty { return "👻" }
+        let controller = window.windowController as? BaseTerminalController
+        if let override = controller?.titleOverride, !override.isEmpty { return title }
+        guard let folder = folderName(fromPathTitle: title, pwd: pwd) else { return title }
+        return folder
+    }
+
+    private static func folderName(fromPathTitle title: String, pwd: String?) -> String? {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        let pathPrefixes = ["/", "~", "…/", ".../", "../"]
+        guard pathPrefixes.contains(where: trimmed.hasPrefix), !trimmed.contains(" ") else { return nil }
+        if trimmed == "~" || trimmed == "/" { return trimmed }
+        // Prefer the real directory, since the shell may have shortened the title.
+        if let pwd, (pwd as NSString).abbreviatingWithTildeInPath == "~" { return "~" }
+        let last = pwd.map { ($0 as NSString).lastPathComponent }
+            ?? (trimmed as NSString).lastPathComponent
+        return last.isEmpty ? nil : "/\(last)"
+    }
+
     private func reload() {
         let windows = tabWindows
         let selected = window?.tabGroup?.selectedWindow ?? window
@@ -355,7 +379,7 @@ final class TabSidebarModel: ObservableObject {
             let isSelected = w === selected
             return Tab(
                 id: ObjectIdentifier(w),
-                title: w.title.isEmpty ? "👻" : w.title,
+                title: Self.displayTitle(of: w, pwd: pwd),
                 color: terminal?.tabColor ?? .none,
                 isSelected: isSelected,
                 keyEquivalent: terminal?.keyEquivalent ?? "",
@@ -2011,6 +2035,9 @@ private struct TabSidebarContextMenu: View {
         Button("Close Tab") { model.close(tab.id) }
         Button("Close Other Tabs") { model.closeOthers(tab.id) }
         Divider()
+        Toggle("Show Folder, Branch and Command Time", isOn: Binding(
+            get: { TabSidebarState.shared.showsDetails },
+            set: { TabSidebarState.shared.showsDetails = $0 }))
         TabSidebarLayoutMenu()
     }
 }

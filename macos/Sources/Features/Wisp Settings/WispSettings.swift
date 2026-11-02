@@ -366,6 +366,7 @@ struct WispSettingsView: View {
                 key: "macos-vertical-tabs", title: "Vertical tab sidebar", defaultValue: true,
                 note: "Also in the tab menu. ⌘E pins or collapses the sidebar.")
             UnloadTabsPicker()
+            TabDetailsToggle()
             GroupLabelStylePicker()
             TabColorStylePicker()
             SettingPicker(key: "notify-on-command-finish", title: "Notify when a command finishes", options: ["never", "unfocused", "always"])
@@ -386,6 +387,15 @@ private struct GroupLabelStylePicker: View {
         Picker("Group labels", selection: $state.groupLabelStyle) {
             ForEach(TabGroupLabelStyle.allCases, id: \.self) { Text($0.title).tag($0) }
         }
+    }
+}
+
+/// Whether sidebar tabs show the gray line with folder, branch and command time.
+private struct TabDetailsToggle: View {
+    @ObservedObject private var state = TabSidebarState.shared
+
+    var body: some View {
+        Toggle("Show folder, branch and command time", isOn: $state.showsDetails)
     }
 }
 
