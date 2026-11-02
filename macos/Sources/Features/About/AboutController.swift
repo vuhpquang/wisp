@@ -12,7 +12,8 @@ class AboutController: NSWindowController, NSWindowDelegate {
         guard let window = window else { return }
         window.center()
         window.isMovableByWindowBackground = true
-        window.contentView = NSHostingView(rootView: AboutView().environmentObject(viewModel))
+        // Wisp: show its own About view instead of upstream's AboutView.
+        window.contentView = NSHostingView(rootView: WispAboutView())
         window.titlebarAppearsTransparent = true
     }
 
