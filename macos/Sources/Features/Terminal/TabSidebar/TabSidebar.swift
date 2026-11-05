@@ -1,7 +1,6 @@
 import AppKit
 import Combine
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// App-wide state for the vertical tab sidebar. The pinned state is shared by
 /// every window so switching tabs (which are separate NSWindows) keeps the
@@ -754,6 +753,11 @@ final class TabSidebarModel: ObservableObject {
     /// Bumped to move keyboard focus to the search field.
     @Published private(set) var searchFocusRequest = 0
 
+    /// The workspace being dragged in the workspace bar. Starting a tab drag
+    /// clears it, so a cancelled workspace drag can't make a dragged tab
+    /// reorder workspaces.
+    var draggingWorkspace: UUID?
+
     /// Focus the search field (⌘L). Returns false without a sidebar so the
     /// keybinding can fall through.
     func focusSearch() -> Bool {
@@ -1475,7 +1479,7 @@ struct TabSidebarView: View {
             .padding(.horizontal, 8)
             .padding(.top, 6)
 
-            TabWorkspaceBar(model: model)
+            TabWorkspaceBar(model: model, tabDragging: $dragging)
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
         }
@@ -1505,6 +1509,7 @@ struct TabSidebarView: View {
     private func draggable<V: View>(_ view: V, id: TabSidebarModel.Tab.ID) -> some View {
         view.onDrag {
             dragging = .tab(id)
+            model.draggingWorkspace = nil
             return NSItemProvider(object: "\(id.hashValue)" as NSString)
         }
     }
@@ -1586,9 +1591,10 @@ private struct TabSidebarSearchField: View {
 /// Workspace switcher at the bottom of the sidebar, like Zen's.
 private struct TabWorkspaceBar: View {
     @ObservedObject var model: TabSidebarModel
+    /// The sidebar's tab drag, cleared when a workspace drag starts so the tab
+    /// list's drop zones ignore it.
+    @Binding var tabDragging: TabSidebarModel.DragItem?
     @ObservedObject private var store = TabWorkspaceStore.shared
-    /// The workspace being dragged to a new place in the bar.
-    @State private var dragging: UUID?
 
     var body: some View {
         HStack(spacing: 2) {
@@ -1620,12 +1626,13 @@ private struct TabWorkspaceBar: View {
                         .help(index < 9 ? "\(workspace.name) (⇧⌘\(index + 1))" : workspace.name)
                         .contextMenu { TabWorkspaceMenu(workspace: workspace, model: model) }
                         .onDrag {
-                            dragging = workspace.id
-                            return TabWorkspaceDropDelegate.itemProvider(for: workspace.id)
+                            model.draggingWorkspace = workspace.id
+                            tabDragging = nil
+                            return NSItemProvider(object: workspace.id.uuidString as NSString)
                         }
                         .onDrop(
-                            of: [TabWorkspaceDropDelegate.type],
-                            delegate: TabWorkspaceDropDelegate(target: workspace.id, dragging: $dragging))
+                            of: [.text],
+                            delegate: TabWorkspaceDropDelegate(target: workspace.id, model: model))
                     }
                 }
             }
@@ -1670,25 +1677,17 @@ private struct TabWorkspaceBar: View {
 }
 
 /// Reorders workspaces while one is dragged over the others in the bar.
-/// Workspaces are dragged as their own type so tab drop zones ignore them and
-/// dragged tabs don't reorder workspaces.
+/// Drags that aren't a workspace (e.g. a tab) leave the order alone.
 private struct TabWorkspaceDropDelegate: DropDelegate {
-    static let type = UTType(exportedAs: "com.mitchellh.ghostty.wisp-workspace", conformingTo: .data)
-
     let target: UUID
-    @Binding var dragging: UUID?
+    let model: TabSidebarModel
 
-    static func itemProvider(for id: UUID) -> NSItemProvider {
-        let provider = NSItemProvider()
-        provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .ownProcess) { completion in
-            completion(Data(id.uuidString.utf8), nil)
-            return nil
-        }
-        return provider
+    func validateDrop(info: DropInfo) -> Bool {
+        model.draggingWorkspace != nil
     }
 
     func dropEntered(info: DropInfo) {
-        guard let dragging, dragging != target else { return }
+        guard let dragging = model.draggingWorkspace, dragging != target else { return }
         withAnimation(.easeInOut(duration: 0.15)) {
             TabWorkspaceStore.shared.move(dragging, to: target)
         }
@@ -1699,7 +1698,7 @@ private struct TabWorkspaceDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        dragging = nil
+        model.draggingWorkspace = nil
         return true
     }
 }
