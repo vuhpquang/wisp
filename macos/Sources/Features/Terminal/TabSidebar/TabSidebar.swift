@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// App-wide state for the vertical tab sidebar. The pinned state is shared by
 /// every window so switching tabs (which are separate NSWindows) keeps the
@@ -1586,6 +1587,8 @@ private struct TabSidebarSearchField: View {
 private struct TabWorkspaceBar: View {
     @ObservedObject var model: TabSidebarModel
     @ObservedObject private var store = TabWorkspaceStore.shared
+    /// The workspace being dragged to a new place in the bar.
+    @State private var dragging: UUID?
 
     var body: some View {
         HStack(spacing: 2) {
@@ -1616,6 +1619,13 @@ private struct TabWorkspaceBar: View {
                         .buttonStyle(.plain)
                         .help(index < 9 ? "\(workspace.name) (⇧⌘\(index + 1))" : workspace.name)
                         .contextMenu { TabWorkspaceMenu(workspace: workspace, model: model) }
+                        .onDrag {
+                            dragging = workspace.id
+                            return TabWorkspaceDropDelegate.itemProvider(for: workspace.id)
+                        }
+                        .onDrop(
+                            of: [TabWorkspaceDropDelegate.type],
+                            delegate: TabWorkspaceDropDelegate(target: workspace.id, dragging: $dragging))
                     }
                 }
             }
@@ -1656,6 +1666,41 @@ private struct TabWorkspaceBar: View {
             .help("Workspaces and Layouts")
         }
         .frame(height: 30)
+    }
+}
+
+/// Reorders workspaces while one is dragged over the others in the bar.
+/// Workspaces are dragged as their own type so tab drop zones ignore them and
+/// dragged tabs don't reorder workspaces.
+private struct TabWorkspaceDropDelegate: DropDelegate {
+    static let type = UTType(exportedAs: "com.mitchellh.ghostty.wisp-workspace", conformingTo: .data)
+
+    let target: UUID
+    @Binding var dragging: UUID?
+
+    static func itemProvider(for id: UUID) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .ownProcess) { completion in
+            completion(Data(id.uuidString.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != target else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            TabWorkspaceStore.shared.move(dragging, to: target)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
     }
 }
 

@@ -107,6 +107,25 @@ final class TabWorkspaceStore: ObservableObject {
         workspaces[index].icon = icon
     }
 
+    /// Move a workspace to the position `target` has, e.g. while it is dragged
+    /// over `target` in the workspace bar. The order sets ⇧⌘1… too.
+    func move(_ id: UUID, to target: UUID) {
+        guard id != target,
+              let from = workspaces.firstIndex(where: { $0.id == id }),
+              let to = workspaces.firstIndex(where: { $0.id == target }) else { return }
+
+        // Windows without a workspace belong to the first one; keep them there
+        // when another workspace becomes first.
+        let first = workspaces[0].id
+        for case let window as TerminalWindow in NSApp.windows where window.workspaceID == nil {
+            window.workspaceID = first
+        }
+
+        var reordered = workspaces
+        reordered.insert(reordered.remove(at: from), at: to)
+        workspaces = reordered
+    }
+
     /// Delete a workspace. Its tabs move to the first remaining workspace.
     func delete(_ id: UUID) {
         guard workspaces.count > 1 else { return }
