@@ -1021,6 +1021,16 @@ class AppDelegate: NSObject,
         item.setImageIfDesired(systemSymbolName: "sparkles")
         menu.insertItem(NSMenuItem.separator(), at: 0)
         menu.insertItem(item, at: 0)
+
+        // Wisp: Window > Process Monitor, below Agent Monitor.
+        let processes = NSMenuItem(title: "Process Monitor", action: #selector(toggleProcessMonitor(_:)), keyEquivalent: "")
+        processes.target = self
+        processes.setImageIfDesired(systemSymbolName: "gauge.with.dots.needle.50percent")
+        menu.insertItem(processes, at: 1)
+    }
+
+    @IBAction func toggleProcessMonitor(_ sender: Any?) {
+        ProcessMonitorWindowController.shared.toggle()
     }
 
     @IBAction func toggleAgentMonitor(_ sender: Any?) {

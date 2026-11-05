@@ -123,6 +123,10 @@ struct SuperNodeItem: Codable, Identifiable, Equatable {
     /// Set on a group whose folder is a git worktree Wisp created for it.
     var worktree: Bool?
 
+    /// Set on an agent whose processes were force closed: it comes back as a
+    /// plain shell instead of starting the agent again.
+    var suspended: Bool?
+
     // Board card details.
     var column: UUID?
     var boardOrder: Double?
@@ -253,6 +257,12 @@ enum SuperNodeStore {
         return index
     }
 
+    /// The saved projects, without creating any when there are none.
+    static func savedIndex() -> SuperNodeProjectIndex? {
+        guard let data = try? Data(contentsOf: indexURL) else { return nil }
+        return try? JSONDecoder().decode(SuperNodeProjectIndex.self, from: data)
+    }
+
     static func saveIndex(_ index: SuperNodeProjectIndex) {
         write(index, to: indexURL)
     }
@@ -271,6 +281,20 @@ enum SuperNodeStore {
 
     static func delete(_ project: UUID) {
         try? FileManager.default.removeItem(at: url(for: project))
+    }
+
+    /// Removes what running nodes leave behind: saved scrollback, digests and
+    /// links between agents. Used after a force close.
+    static func removeRuntimeFiles(of nodes: Set<UUID>) {
+        try? FileManager.default.removeItem(at: SuperNodeTmux.scrollbackDirectory)
+        for id in nodes { SuperNodeContext.remove(id) }
+    }
+
+    /// Deletes every project and its canvas; the next open starts afresh.
+    static func deleteEverything() {
+        for url in [projectsFolder, indexURL, legacyURL, SuperNodeHooks.directory.appendingPathComponent("chat")] {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// The nodes of every saved project, so cleanup never ends a session that

@@ -263,15 +263,128 @@ final class SuperNodeController: NSWindowController, NSWindowDelegate, Observabl
         canvas?.setRefreshing(false)
         isActive = false
         window?.orderOut(nil)
+        showTerminalWindow()
+    }
 
-        // Bring back the terminal window SuperNode was opened from, or any
-        // terminal window, or a new one if there are none left.
+    /// Brings back the terminal window SuperNode was opened from, or any
+    /// terminal window, or a new one if there are none left.
+    private func showTerminalWindow() {
         if let returnWindow, returnWindow.windowController is BaseTerminalController {
             returnWindow.makeKeyAndOrderFront(nil)
         } else if let window = TerminalController.all.compactMap(\.window).first {
             window.makeKeyAndOrderFront(nil)
         } else if let ghostty {
             _ = TerminalController.newWindow(ghostty)
+        }
+    }
+
+    // MARK: Force close
+
+    /// The canvases of open projects, for the Process Monitor.
+    var openCanvases: [SuperNodeCanvasView] { Array(canvases.values) }
+
+    enum ForceCloseMode {
+        /// Kills every process; canvases, notes and boards stay.
+        case processes
+        /// Kills every process and deletes every project.
+        case everything
+    }
+
+    /// Asks before force closing, showing what SuperNode uses when known.
+    func confirmForceClose(usage: SuperNodeUsage?, in sheetWindow: NSWindow?) {
+        let alert = NSAlert()
+        alert.messageText = "Force close SuperNode?"
+        var text = "Every terminal, agent, chat and web page in SuperNode is killed at once, without saving their work."
+        if let usage, usage.processes > 0 {
+            text = "SuperNode runs \(usage.processes) processes using "
+                + "\(ByteCountFormatter.string(fromByteCount: Int64(usage.memory), countStyle: .memory)) of memory "
+                + "and \(String(format: "%.0f", usage.cpu))% CPU.\n\n" + text
+        }
+        text += "\n\nKill Processes keeps your canvases; agents come back as plain shells. "
+            + "Kill & Delete Everything also deletes every project, note, board and chat."
+        alert.informativeText = text
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Kill Processes")
+        alert.addButton(withTitle: "Kill & Delete Everything")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[1].hasDestructiveAction = true
+
+        let handle: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            switch response {
+            case .alertFirstButtonReturn: self?.forceClose(.processes)
+            case .alertSecondButtonReturn: self?.forceClose(.everything)
+            default: break
+            }
+        }
+        if let sheetWindow {
+            alert.beginSheetModal(for: sheetWindow, completionHandler: handle)
+        } else {
+            handle(alert.runModal())
+        }
+    }
+
+    /// Kills everything SuperNode runs: the tmux server and every process in
+    /// it, chat processes, web pages, and terminals outside tmux.
+    func forceClose(_ mode: ForceCloseMode) {
+        // Gather processes while the views still know them.
+        let parents = ProcessSampler.parents()
+        let wisp = getpid()
+        var targets: [pid_t] = []
+        for root in SuperNodeUsageRoots.current(savedNodes: [:]).roots {
+            targets += root.pids
+            if var pid = root.foregroundPID {
+                while let parent = parents[pid], parent != wisp, parent > 1 { pid = parent }
+                if parents[pid] == wisp { targets += ProcessSampler.descendants(of: pid, parents: parents) }
+            }
+        }
+
+        var nodes = Set(canvases.values.flatMap { $0.nodeViews.map(\.item.id) })
+        if let index = SuperNodeStore.savedIndex() { nodes.formUnion(SuperNodeStore.allNodeIDs(in: index)) }
+
+        if mode == .processes {
+            // Agents come back as shells, so reopening doesn't start them all again.
+            for canvas in canvases.values {
+                for node in canvas.nodeViews where node.item.kind == .agent {
+                    node.item.suspended = true
+                }
+                canvas.save()
+            }
+            for project in SuperNodeStore.savedIndex()?.projects ?? [] where canvases[project.id] == nil {
+                var document = SuperNodeStore.load(project.id)
+                guard document.nodes.contains(where: { $0.kind == .agent }) else { continue }
+                for index in document.nodes.indices where document.nodes[index].kind == .agent {
+                    document.nodes[index].suspended = true
+                }
+                SuperNodeStore.save(document, project: project.id)
+            }
+        }
+
+        if isActive {
+            isActive = false
+            window?.orderOut(nil)
+            showTerminalWindow()
+        }
+        for canvas in canvases.values {
+            canvas.discard()
+            canvas.removeFromSuperview()
+        }
+        canvases = [:]
+        projects = []
+        currentProjectID = nil
+        loaded = false
+        window?.title = "SuperNode"
+
+        let found = targets
+        DispatchQueue.global(qos: .userInitiated).async {
+            var targets = found
+            // Kill the processes in tmux first: some agents outlive a hangup.
+            if let server = SuperNodeUsage.tmuxProcesses().server {
+                targets += ProcessSampler.descendants(of: server, parents: ProcessSampler.parents()).filter { $0 != server }
+            }
+            for pid in Set(targets) { ProcessSampler.signal(pid, SIGKILL) }
+            if SuperNodeTmux.executable != nil { SuperNodeTmux.run(["kill-server"]) }
+            SuperNodeStore.removeRuntimeFiles(of: nodes)
+            if mode == .everything { SuperNodeStore.deleteEverything() }
         }
     }
 
@@ -464,6 +577,11 @@ struct SuperNodeProjectMenu: View {
             Button("Rename Project…") { controller.renameProject() }
             Button("Delete Project…") { controller.deleteProject() }
                 .disabled(controller.projects.count <= 1)
+            Divider()
+            Button("Resource Usage…") { ProcessMonitorWindowController.shared.show(tab: .superNode) }
+            Button("Force Close SuperNode…") {
+                controller.confirmForceClose(usage: ProcessMonitorWindowController.shared.latestSuperNodeUsage, in: controller.window)
+            }
         } label: {
             // One Text: a borderless menu shows only the first view of its label.
             (Text("SuperNode  /  ").foregroundColor(.secondary) + Text(controller.currentProject?.name ?? ""))

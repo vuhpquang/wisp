@@ -126,6 +126,8 @@ final class SuperNodeCanvasView: NSView {
         for item in document.nodes {
             addNodeView(for: item, restoring: true)
         }
+        // Agents brought back as shells after a force close stay shells only once.
+        if document.nodes.contains(where: { $0.suspended == true }) { scheduleSave() }
         // Keep the saved scrollback recent in case the Mac restarts without quitting Wisp.
         scrollbackTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             self?.saveScrollback(waiting: false)
@@ -643,12 +645,15 @@ final class SuperNodeCanvasView: NSView {
                     replay: replay ? snapshot : nil)
             }
 
-            if item.kind == .agent, let agent = item.agent, !running {
+            if item.kind == .agent, let agent = item.agent, !running, item.suspended != true {
                 // Typed into the shell rather than run as the command, so the
                 // shell stays when the agent exits.
                 config.initialInput = (command ?? agent.command(resuming: restoring, sessionID: item.sessionID)) + "\n"
             }
             let surface = SuperNodeSurfaceView(app, baseConfig: config)
+            var item = item
+            // A force closed agent stays a shell this once; the user starts it again.
+            item.suspended = nil
             view = SuperNodeTerminalView(item: item, surface: surface, ghostty: ghostty, usesTmux: usesTmux)
         case .note:
             view = SuperNodeNoteView(item: item)
@@ -769,6 +774,25 @@ final class SuperNodeCanvasView: NSView {
     /// Closes every node without asking, as when its project is deleted.
     func closeAllNodes() {
         for node in nodeViews { closeNode(node, confirm: false) }
+    }
+
+    /// Stops everything this canvas runs without saving, for a force close.
+    /// The saved canvas is left as it was; the view can't be used after this.
+    func discard() {
+        saveWork?.cancel()
+        saveWork = nil
+        diffTimer?.invalidate()
+        diffTimer = nil
+        scrollbackTimer?.invalidate()
+        scrollbackTimer = nil
+        chat.onChange = nil
+        chat.stop()
+        undoManager?.removeAllActions()
+        for node in nodeViews {
+            node.tearDown()
+            node.removeFromSuperview()
+        }
+        nodeViews = []
     }
 
     func renameNode(_ node: SuperNodeNodeView) {

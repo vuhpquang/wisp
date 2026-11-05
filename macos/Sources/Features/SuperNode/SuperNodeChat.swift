@@ -40,6 +40,11 @@ final class SuperNodeChatModel: ObservableObject {
 
     private(set) var sessionID: String?
     private var process: Process?
+    /// The running Claude Code process, for the Process Monitor.
+    var processID: pid_t? {
+        guard let process, process.isRunning else { return nil }
+        return process.processIdentifier
+    }
     private var input: FileHandle?
     private var buffer = Data()
     private var starting = false

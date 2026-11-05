@@ -1644,6 +1644,7 @@ private struct TabWorkspaceBar: View {
                 Divider()
 
                 Button("Agent Monitor") { AgentMonitorWindowController.shared.toggle() }
+                Button("Process Monitor") { ProcessMonitorWindowController.shared.toggle() }
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .medium))
@@ -1943,6 +1944,7 @@ private struct TabSidebarBackgroundMenu: View {
         Divider()
 
         Button("Agent Monitor") { AgentMonitorWindowController.shared.toggle() }
+        Button("Process Monitor") { ProcessMonitorWindowController.shared.toggle() }
         Button("Settings…") { WispSettingsWindowController.shared.show() }
     }
 }

@@ -169,6 +169,15 @@ final class SuperNodeWebView: SuperNodeNodeView, WKNavigationDelegate, WKUIDeleg
         observations = []
         webView.stopLoading()
     }
+
+    /// The WebKit process drawing this page, for the Process Monitor. WebKit
+    /// only tells through a private property, so look before asking.
+    var contentProcessID: pid_t? {
+        let key = "_webProcessIdentifier"
+        guard webView.responds(to: NSSelectorFromString(key)),
+              let pid = (webView.value(forKey: key) as? NSNumber)?.int32Value, pid > 0 else { return nil }
+        return pid
+    }
 }
 
 /// The web node's body: a toolbar with the address above the page.
