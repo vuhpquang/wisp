@@ -597,6 +597,8 @@ private struct SuperNodeChatField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
+        // scrollableTextView() always holds an NSTextView.
+        // swiftlint:disable:next force_cast
         let textView = scrollView.documentView as! NSTextView
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder

@@ -672,6 +672,8 @@ final class SuperNodeNoteView: SuperNodeNodeView, NSTextViewDelegate {
 
     override init(item: SuperNodeItem) {
         let scrollView = NSTextView.scrollableTextView()
+        // scrollableTextView() always holds an NSTextView.
+        // swiftlint:disable:next force_cast
         textView = scrollView.documentView as! NSTextView
         super.init(item: item)
 
