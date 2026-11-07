@@ -4,6 +4,14 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.3.2 - 2026-11-07
+
+### Tabs and workspaces
+- Closing a tab shows the tab listed just above it (or below, if it was first), pinned tiles
+  included, and you stay in the same workspace instead of jumping to another one.
+- Closing the last tab of a workspace opens a new tab in your home folder there and asks whether
+  to delete the workspace. Deleting it takes you to the last tab of the workspace next to it.
+
 ## 0.3.1 - 2026-11-07
 
 ### Process Monitor
