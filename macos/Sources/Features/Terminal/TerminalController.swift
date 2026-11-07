@@ -759,6 +759,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             }
         }
 
+        // Wisp: stay in the workspace when the selected tab closes (TabClosing.swift).
+        TabClosing.willClose(window)
+
         window.close()
     }
 
