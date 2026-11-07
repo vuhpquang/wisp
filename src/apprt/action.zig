@@ -382,6 +382,8 @@ pub const Action = union(Key) {
 
     /// Focus the search field of the vertical tab sidebar.
     focus_tab_search,
+    /// Set the application window theme for this session.
+    set_window_theme: WindowTheme,
 
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
@@ -461,6 +463,7 @@ pub const Action = union(Key) {
         goto_attention_tab,
         toggle_tab_switcher,
         focus_tab_search,
+        set_window_theme,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -649,6 +652,17 @@ pub const SecureInput = enum(c_int) {
 
     test "ghostty.h SecureInput" {
         try lib.checkGhosttyHEnum(SecureInput, "GHOSTTY_SECURE_INPUT_");
+    }
+};
+
+pub const WindowTheme = enum(c_int) {
+    config,
+    system,
+    light,
+    dark,
+
+    test "ghostty.h WindowTheme" {
+        try lib.checkGhosttyHEnum(WindowTheme, "GHOSTTY_ACTION_WINDOW_THEME_");
     }
 };
 

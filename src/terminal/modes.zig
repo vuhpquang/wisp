@@ -8,10 +8,9 @@
 //! to ensure all our various types and logic remain in sync.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const build_options = @import("terminal_options");
 const testing = std.testing;
 const ComptimeIntSet = @import("../datastruct/main.zig").ComptimeIntSet;
+const checkGhosttyVtHMacroExists = @import("../lib/enum.zig").checkGhosttyVtHMacroExists;
 
 /// A struct that maintains the state of all the settable modes.
 pub const ModeState = struct {
@@ -185,6 +184,10 @@ pub const Mode = mode_enum: {
     break :mode_enum @Enum(ModeTag.Backing, .exhaustive, &names, &values);
 };
 
+test "ghostty/vt.h Mode" {
+    try checkGhosttyVtHMacroExists(Mode, "GHOSTTY_MODE_");
+}
+
 /// The tag type for our enum is a u16 but we use a packed struct
 /// in order to pack the ansi bit into the tag.
 pub const ModeTag = packed struct(u16) {
@@ -293,6 +296,11 @@ pub const Report = struct {
         reset = 2,
         permanently_set = 3,
         permanently_reset = 4,
+
+        /// The integer type this enum crosses the C API as. The C enum
+        /// `GhosttyModeReportState` is a C int, while this enum is a u8 so
+        /// it stays small inside `Report`.
+        pub const C = c_int;
     };
 
     /// Encode the DECRPM report sequence.
@@ -410,13 +418,7 @@ const entries: []const ModeEntry = &.{
     // paste sends an unsolicited OSC 5522 targets listing with a
     // one-time password instead of pasting the text.
     // See https://sw.kovidgoyal.net/kitty/clipboard/
-    .{
-        .name = "kitty_paste_events",
-        .value = 5522,
-        // The macOS app and libghostty-vt can both serve the follow-up
-        // Kitty clipboard read that a paste event grants.
-        .disabled = build_options.artifact != .lib and builtin.target.os.tag != .macos,
-    },
+    .{ .name = "kitty_paste_events", .value = 5522 },
 };
 
 test {
