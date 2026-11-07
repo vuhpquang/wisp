@@ -4,6 +4,33 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.3.1 - 2026-11-07
+
+### Process Monitor
+- Window > Process Monitor (also in the sidebar menu) lists every process on the Mac with its CPU,
+  memory, threads, running time, user and command line. Search it, sort it, narrow it to your
+  processes or the ones Wisp started, and Quit or Force Quit from there. The header shows memory
+  and swap for the whole Mac.
+- Its SuperNode tab adds up what SuperNode runs, node by node, including projects that aren't open.
+- Force Close SuperNode (there, or in the SuperNode project menu) stops all of it at once. Kill
+  Processes keeps your canvases and brings agents back as plain shells; Kill & Delete Everything
+  also deletes every project.
+
+### Tabs and workspaces
+- Drag a workspace in the workspace bar to reorder it. The order also decides the ⇧⌘1… shortcuts.
+- ⌘1… now count pinned tabs first, so the numbers match the tiles at the top of the sidebar.
+- A tab that hasn't been renamed shows just its last folder (/mini-app) instead of a cut-off path.
+- The folder and branch line under a tab can now be turned off from the tab menu and from
+  Settings > Tabs.
+
+### About
+- The About window is now Wisp's own: its icon, the commit it was built from, a Check for Updates
+  button and links to the repo, changelog and issue tracker, with credit to Ghostty.
+
+### Terminal
+- Caught up with upstream Ghostty after the weekly merge stalled on a conflict, including a new
+  action to switch the window theme for the session.
+
 ## 0.3.0 - 2026-11-01
 
 ### SuperNode mode
