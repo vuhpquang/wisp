@@ -4,6 +4,18 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.3.3 - 2026-11-11
+
+### Terminal (updated from upstream)
+- Resizing a window taller and narrower at once pulls scrollback down correctly again, and a
+  resize that widens columns no longer leaves the cursor or selection pointing at the wrong cell.
+- Rows that failed to redraw (for example under memory pressure) are retried instead of staying stale.
+- Text with an invalid UTF-8 byte still shows everything before the bad byte, and fast text
+  decoding works again on CPUs with AVX-512.
+- `ssh` terminfo install runs under `sh`, so it works when your login shell on the server is fish
+  or another non-POSIX shell; the terminfo entry has a clearer description.
+- Updated colour themes.
+
 ## 0.3.2 - 2026-11-07
 
 ### Tabs and workspaces
