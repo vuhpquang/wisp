@@ -8,8 +8,14 @@ struct WispAboutView: View {
     @ObservedObject private var updater = WispUpdater.shared
 
     private static let repoURL = URL(string: "https://github.com/vuhpquang/wisp")!
-    private static let authorName = "Vu Ha"
-    private static let authorURL = URL(string: "https://github.com/vuhpquang")!
+    // Author identity: copied from app-shell's `Author` (github.com/vuhpquang/app-shell,
+    // Sources/AppShellCore/Author.swift). Wisp doesn't link the package (upstream merges stay
+    // clean), so keep these in sync by hand — hub rule `.claude/rules/app-shell.md`.
+    private static let authorName = "Ha Phung Quang Vu"
+    private static let authorURL = URL(string: "https://vuhpquang.com")!
+    private static let githubURL = URL(string: "https://github.com/vuhpquang")!
+    private static let linkedInURL = URL(string: "https://www.linkedin.com/in/vuhpquang/")!
+    private static let copyright = "© 2026 Ha Phung Quang Vu"
     private static let ghosttyURL = URL(string: "https://github.com/ghostty-org/ghostty")!
 
     private let info = Bundle.main.infoDictionary ?? [:]
@@ -75,8 +81,15 @@ struct WispAboutView: View {
                         .foregroundStyle(.secondary)
                     Link(Self.authorName, destination: Self.authorURL)
                 }
-                Link("github.com/vuhpquang/wisp", destination: Self.repoURL)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Link("vuhpquang.com", destination: Self.authorURL)
+                    Text("·").foregroundStyle(.tertiary)
+                    Link("GitHub", destination: Self.githubURL)
+                    Text("·").foregroundStyle(.tertiary)
+                    Link("LinkedIn", destination: Self.linkedInURL)
+                    Text("·").foregroundStyle(.tertiary)
+                    Link("Source code", destination: Self.repoURL)
+                }
                 HStack(spacing: 4) {
                     Text("Built on")
                     Link("Ghostty", destination: Self.ghosttyURL)
@@ -84,6 +97,8 @@ struct WispAboutView: View {
                 }
                 .foregroundStyle(.tertiary)
                 .padding(.top, 2)
+                Text(Self.copyright)
+                    .foregroundStyle(.tertiary)
             }
             .font(.caption)
         }
