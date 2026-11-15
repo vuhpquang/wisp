@@ -4,6 +4,12 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.3.4 - 2026-11-15
+
+### About
+- Wisp's About window shows the author's logo and the same author details and links
+  (website, GitHub, LinkedIn, source code) as the owner's other apps.
+
 ## 0.3.3 - 2026-11-11
 
 ### Terminal (updated from upstream)
