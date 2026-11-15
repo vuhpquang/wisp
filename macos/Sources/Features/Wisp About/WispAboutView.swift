@@ -76,6 +76,12 @@ struct WispAboutView: View {
                 .padding(.vertical, 18)
 
             VStack(spacing: 4) {
+                Image("WispAuthorLogo")
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
+                    .padding(.bottom, 2)
                 HStack(spacing: 4) {
                     Text("Made by")
                         .foregroundStyle(.secondary)
