@@ -28,13 +28,11 @@ struct WispUpdateBanner: View {
                     Text(summary)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
-                    HStack {
+                    actions {
                         Button("Update", action: updater.update)
                             .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
                         Button("Later", action: updater.dismiss)
                             .buttonStyle(.borderless)
-                            .controlSize(.small)
                     }
                     .padding(.top, 2)
                 }
@@ -65,19 +63,29 @@ struct WispUpdateBanner: View {
 
         case .failed(let message):
             banner(icon: "exclamationmark.triangle.fill", tint: .orange) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(message)
-                        .lineLimit(3)
-                    HStack {
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                    actions {
                         Button("Show Log", action: updater.openLog)
-                            .controlSize(.small)
                         Button("Dismiss", action: updater.dismiss)
                             .buttonStyle(.borderless)
-                            .controlSize(.small)
                     }
                 }
             }
         }
+    }
+
+    /// Buttons side by side, or stacked when the sidebar is too narrow for
+    /// that, so their titles are never cut off.
+    private func actions<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let buttons = content()
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { buttons }
+            VStack(alignment: .leading, spacing: 4) { buttons }
+        }
+        .controlSize(.small)
     }
 
     private func banner<Content: View>(

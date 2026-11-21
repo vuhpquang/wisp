@@ -152,10 +152,18 @@ final class WispUpdater: ObservableObject {
                     UserDefaults.ghostty.set(WispChangelog.currentVersion, forKey: WispChangelog.updatedFromKey)
                     self.state = .readyToRestart
                 } else {
-                    self.state = .failed("The update failed. See the log for details.")
+                    self.state = .failed(Self.failureReason() ?? "The update failed. See the log for details.")
                 }
             }
         }
+    }
+
+    /// The install script's last `wisp-error:` line, e.g. the step that failed.
+    private static func failureReason() -> String? {
+        guard let log = try? String(contentsOf: logURL, encoding: .utf8) else { return nil }
+        let prefix = "wisp-error: "
+        return log.split(separator: "\n").last { $0.hasPrefix(prefix) }
+            .map { String($0.dropFirst(prefix.count)) }
     }
 
     /// Pull, rebuild and reinstall with the install script.

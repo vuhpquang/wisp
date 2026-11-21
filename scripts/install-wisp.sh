@@ -36,9 +36,39 @@ source_dir="$(pwd)"
 dest="${WISP_DEST:-/Applications/Wisp.app}"
 built="macos/build/ReleaseLocal/Ghostty.app"
 
+# A failing step leaves one "wisp-error:" line in the output; the in-app
+# updater shows it instead of a generic message.
+step="The update"
+fail() { echo "wisp-error: $*"; exit 1; }
+trap 'echo "wisp-error: ${step} failed. See the log for details."' ERR
+
 if $pull; then
+  step="Pulling origin/main"
   echo "==> Pulling origin/main"
   git pull --ff-only origin main
+fi
+
+# Upstream Ghostty raises the Zig it needs from time to time (same major.minor,
+# patch at least the one in build.zig.zon). Upgrade Homebrew's Zig when it is
+# older, so an in-app update doesn't stop at a compile error.
+zig_satisfies() {
+  local current required
+  IFS=. read -r -a current <<<"${1%%[-+]*}"
+  IFS=. read -r -a required <<<"$2"
+  [ "${current[0]:-0}" = "${required[0]}" ] && [ "${current[1]:-0}" = "${required[1]}" ] &&
+    [ "${current[2]:-0}" -ge "${required[2]}" ]
+}
+required_zig="$(sed -n 's/^ *\.minimum_zig_version = "\(.*\)",/\1/p' build.zig.zon | head -1)"
+current_zig="$(zig version 2>/dev/null || echo none)"
+if ! zig_satisfies "$current_zig" "$required_zig"; then
+  command -v brew >/dev/null ||
+    fail "Zig $required_zig is needed (found $current_zig). Install it, then update again."
+  step="Upgrading Zig to $required_zig"
+  echo "==> Upgrading Zig $current_zig -> $required_zig (Homebrew)"
+  if [ "$current_zig" = none ]; then brew install zig; else brew upgrade zig; fi
+  current_zig="$(zig version)"
+  zig_satisfies "$current_zig" "$required_zig" ||
+    fail "Zig $required_zig is needed but Homebrew has $current_zig."
 fi
 
 # libghostty embeds its version, which by default includes the current commit,
@@ -49,10 +79,12 @@ base_version="$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon | head -1
 lib_commit="$(git log -1 --format=%h -- src include pkg vendor build.zig build.zig.zon)"
 lib_version="${base_version}+${lib_commit}"
 
+step="Building libghostty"
 echo "==> Building libghostty $lib_version (ReleaseFast, this Mac's architecture)"
 zig build -Doptimize=ReleaseFast -Demit-macos-app=false \
   -Dxcframework-target=native -Dversion-string="$lib_version"
 
+step="Building the macOS app"
 echo "==> Building the macOS app (ReleaseLocal)"
 # Match the single-architecture library built above.
 (cd macos && xcodebuild -target Ghostty -configuration ReleaseLocal -arch "$(uname -m)" build -quiet)
@@ -63,6 +95,7 @@ if $quit && [ "$(osascript -e 'application id "com.vuhpquang.wisp" is running' 2
   sleep 2
 fi
 
+step="Installing to $dest"
 echo "==> Installing to $dest"
 rm -rf "$dest"
 cp -R "$built" "$dest"
@@ -98,6 +131,7 @@ else
   echo "warning: signing ad hoc; macOS will ask for permissions again after each update." >&2
   echo "         Run scripts/setup-wisp-signing.sh once to fix that." >&2
 fi
+step="Signing"
 echo "==> Signing as ${identity/#-/ad hoc}"
 codesign --force --sign "$identity" --options runtime \
   --entitlements macos/GhosttyReleaseLocal.entitlements "$dest"
