@@ -4,6 +4,22 @@ Wisp's own changes. The terminal underneath follows upstream Ghostty, merged wee
 Wisp shows the new sections of this file after it updates itself; the build scripts
 take the version from the first heading.
 
+## 0.3.5 - 2026-11-21
+
+### Updates
+- Updating from inside Wisp works again: the update upgrades Zig when the terminal needs a newer
+  one, and when an update fails the banner says which step failed. Its buttons stack instead of
+  being cut off when the sidebar is narrow.
+
+### Terminal (updated from upstream)
+- A prompt redrawn after a resize no longer leaves a stale copy behind, and clicking into a split
+  to focus it no longer acts on the click as well.
+- Kitty graphics keep showing a replaced image until the new one has fully arrived.
+- Faster output handling (carriage returns, styled text, invalid UTF-8) and steadier memory use as
+  scrollback grows.
+- Copy-on-select copies to the selection clipboard by default on macOS.
+- Updated colour themes and translations.
+
 ## 0.3.4 - 2026-11-15
 
 ### About
