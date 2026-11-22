@@ -27,6 +27,7 @@ A file for [guiding coding agents](https://agents.md/) working on Wisp.
   - `macos/Sources/Features/Wisp Settings/`: Settings window, keyboard and quick terminal panes
   - `macos/Sources/Features/Wisp Update/`: in-app updater
   - `macos/Sources/Features/Agent Monitor/`, `macos/Sources/Features/Share Output/`
+- Design of Wisp's own surfaces: `DESIGN.md` (look, components, render recipe, known gaps).
 - New keybinding actions go through `src/input/Binding.zig`, `src/apprt/action.zig`,
   `include/ghostty.h` (append to the end of `ghostty_action_tag_e`), `src/Surface.zig`,
   `src/input/command.zig`, the GTK unimplemented list and `macos/Sources/Ghostty/Ghostty.App.swift`.
