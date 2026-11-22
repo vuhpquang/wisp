@@ -111,8 +111,11 @@ switch (see gaps).
 
 Debug build in `macos/` (`zig build -Demit-macos-app=false` when Zig changed, then
 `xcodebuild -target Ghostty -configuration Debug`). Synthetic mouse events don't reach a background
-debug app, so **the owner tests interactions and sends screenshots**. Installing for a preview:
-`scripts/install-wisp.sh` (keeps the running Wisp; used after its next restart).
+debug app, so **the owner tests interactions and sends screenshots**.
+
+Not a render step: `scripts/install-wisp.sh` installs a **preview** into `/Applications` for the owner
+(keeps the running Wisp; used after its next restart). Run it only when a change is finished, per the
+hub's "Preview first" rule — never to look at UI while working.
 
 ## 12. Known gaps
 
