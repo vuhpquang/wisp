@@ -942,6 +942,11 @@ pub const Page = struct {
                 // Empty only if both the copied and kept parts were.
                 copy.blank = dst_row.blank and src_row.blank;
                 copy.dirty |= dst_row.dirty;
+
+                // The kept part may have placeholders. Like styled, this
+                // may overestimate, which only costs the renderer a scan.
+                copy.kitty_virtual_placeholder = dst_row.kitty_virtual_placeholder or
+                    src_row.kitty_virtual_placeholder;
             }
 
             // Our cell offset remains the same
@@ -2642,16 +2647,20 @@ pub const Cell = packed struct(u64) {
     /// Returns true if the cell has no text or styling.
     pub fn isEmpty(self: Cell) bool {
         return switch (self.content_tag) {
-            // Textual cells are empty if they have no text and are narrow.
-            // The "narrow" requirement is because wide spacers are meaningful.
             .codepoint,
             .codepoint_grapheme,
-            => !self.hasText() and self.wide == .narrow,
+            => self.isBlank(),
 
             .bg_color_palette,
             .bg_color_rgb,
             => false,
         };
+    }
+
+    /// Like isEmpty, but a cell with only a background color is blank.
+    /// Wide spacers are meaningful, so they are never blank.
+    pub fn isBlank(self: Cell) bool {
+        return !self.hasText() and self.wide == .narrow;
     }
 
     pub inline fn hasGrapheme(self: Cell) bool {
@@ -4731,6 +4740,51 @@ test "Page cloneRowFrom partial keeps blank only if both parts are blank" {
     src.getRow(2).blank = true;
     try dst.clonePartialRowFrom(&src, dst.getRow(2), src.getRow(2), 2, 8);
     try testing.expect(!dst.getRow(2).blank);
+}
+
+test "Page cloneRowFrom partial keeps kitty placeholder flag" {
+    if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
+
+    var src = try Page.init(.{
+        .cols = 10,
+        .rows = 10,
+        .styles = 8,
+    });
+    defer src.deinit();
+    var dst = try Page.init(.{
+        .cols = 10,
+        .rows = 10,
+        .styles = 8,
+    });
+    defer dst.deinit();
+
+    // A placeholder in the kept part of the destination: the flag stays.
+    {
+        const rac = dst.getRowAndCell(0, 0);
+        rac.cell.* = .init(kitty.graphics.unicode.placeholder);
+        rac.row.kitty_virtual_placeholder = true;
+    }
+    try dst.clonePartialRowFrom(&src, dst.getRow(0), src.getRow(0), 2, 8);
+    try testing.expect(dst.getRow(0).kitty_virtual_placeholder);
+    try testing.expectEqual(
+        kitty.graphics.unicode.placeholder,
+        dst.getRowAndCell(0, 0).cell.codepoint(),
+    );
+
+    // A placeholder in the copied part of the source: the flag is set.
+    {
+        const rac = src.getRowAndCell(4, 1);
+        rac.cell.* = .init(kitty.graphics.unicode.placeholder);
+        rac.row.kitty_virtual_placeholder = true;
+    }
+    try dst.clonePartialRowFrom(&src, dst.getRow(1), src.getRow(1), 2, 8);
+    try testing.expect(dst.getRow(1).kitty_virtual_placeholder);
+
+    // No placeholders on either side: the flag stays clear.
+    try dst.clonePartialRowFrom(&src, dst.getRow(2), src.getRow(2), 2, 8);
+    try testing.expect(!dst.getRow(2).kitty_virtual_placeholder);
+
+    try dst.verifyIntegrity(testing.allocator);
 }
 
 test "Page exactRowCapacity empty rows" {
